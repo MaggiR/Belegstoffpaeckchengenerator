@@ -1,0 +1,28 @@
+{
+  "name": "belegstoffpaeckchengenerator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "nuxt": "^3.16.0",
+    "@fortawesome/fontawesome-svg-core": "^6.7.0",
+    "@fortawesome/free-solid-svg-icons": "^6.7.0",
+    "@fortawesome/vue-fontawesome": "^3.0.8",
+    "papaparse": "^5.5.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "tesseract.js": "^5.1.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@nuxtjs/tailwindcss": "^6.13.0",
+    "@types/papaparse": "^5.3.15",
+    "typescript": "^5.7.0"
+  }
+}
