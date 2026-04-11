@@ -1,0 +1,24 @@
+{
+  "name": "belegstoffpaeckchengenerator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview"
+  },
+  "dependencies": {
+    "nuxt": "^4.0.0",
+    "papaparse": "^5.5.3",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.4.149",
+    "tesseract.js": "^6.0.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.3.16",
+    "typescript": "^5.9.2"
+  }
+}
