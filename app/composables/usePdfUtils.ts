@@ -102,7 +102,7 @@ export function usePdfUtils() {
       const fileBytes = await doc.file.arrayBuffer()
 
       if (doc.type === 'pdf') {
-        const sourcePdf = await PDFDocument.load(fileBytes)
+        const sourcePdf = await PDFDocument.load(fileBytes, { ignoreEncryption: true })
         const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices())
         pages.forEach(page => mergedPdf.addPage(page))
       } else {
