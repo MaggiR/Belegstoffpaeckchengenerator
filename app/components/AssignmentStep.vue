@@ -2,7 +2,6 @@
 import type { DocumentFile } from '~/types'
 
 const {
-  currentStep,
   viewMode,
   filteredAndSortedBookings,
   unassignedDocuments,
@@ -274,7 +273,7 @@ async function handleAdditionalUpload(files: FileList) {
 </script>
 
 <template>
-  <div class="max-w-7xl mx-auto space-y-4">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 space-y-4">
     <div class="flex gap-4 items-start">
       <!-- Hauptbereich: Buchungen -->
       <div class="flex-1 min-w-0">
@@ -475,24 +474,6 @@ async function handleAdditionalUpload(files: FileList) {
           </div>
         </div>
       </div>
-    </div>
-
-    <!-- Navigation -->
-    <div class="flex justify-between pt-4">
-      <button
-        class="px-6 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-        @click="currentStep = 1"
-      >
-        <font-awesome-icon icon="arrow-left" class="w-3.5 h-3.5" />
-        Zurück
-      </button>
-      <button
-        class="px-6 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 bg-primary-500 text-white hover:bg-primary-600 shadow-md shadow-primary-500/25 transition-all"
-        @click="currentStep = 3"
-      >
-        Weiter
-        <font-awesome-icon icon="arrow-right" class="w-3.5 h-3.5" />
-      </button>
     </div>
 
     <!-- ColumnMapper Modal -->

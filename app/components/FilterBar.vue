@@ -79,7 +79,8 @@ const showSort = ref(false)
 
         <!-- Statistik -->
         <span class="text-xs text-gray-400 dark:text-gray-500 hidden sm:inline">
-          {{ stats.withDoc }} zugeordnet · {{ stats.missing }} fehlend
+          <span class="text-green-600 dark:text-green-400 font-medium">{{ stats.withDoc }}</span> zugeordnet
+          <span v-if="stats.missing > 0"> · <span class="text-amber-500 dark:text-amber-400 font-medium">{{ stats.missing }}</span> fehlend</span>
         </span>
       </div>
     </div>

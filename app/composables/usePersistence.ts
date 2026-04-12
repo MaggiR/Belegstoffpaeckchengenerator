@@ -1,7 +1,9 @@
+import type { BspMeta } from '~/types'
+
 const DB_NAME = 'bsp-generator'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const FILES_STORE = 'files'
-const LS_KEY = 'bsp-state'
+const BSP_LIST_KEY = 'bsp-list'
 
 let dbInstance: IDBDatabase | null = null
 let saveFilesTimeout: ReturnType<typeof setTimeout> | null = null
@@ -56,18 +58,9 @@ function idbGetAll<T = any>(store: string): Promise<T[]> {
   }))
 }
 
-function idbClear(store: string): Promise<void> {
-  return openDB().then(db => new Promise((resolve, reject) => {
-    const tx = db.transaction(store, 'readwrite')
-    const s = tx.objectStore(store)
-    const req = s.clear()
-    req.onsuccess = () => resolve()
-    req.onerror = () => reject(req.error)
-  }))
-}
-
 interface StoredFileEntry {
   id: string
+  bspId: string
   name: string
   type: 'pdf' | 'image'
   mimeType: string
@@ -87,8 +80,15 @@ interface SerializedBooking {
   noDocRequired: boolean
 }
 
+function lsKey(bspId: string): string {
+  return `bsp-state-${bspId}`
+}
+
 export function usePersistence() {
   const {
+    activeView,
+    currentBspId,
+    bspList,
     currentStep,
     bookings,
     documents,
@@ -101,6 +101,8 @@ export function usePersistence() {
     viewMode,
     filters,
     sort,
+    clearEditorState,
+    updateCurrentBspMeta,
   } = useAppState()
 
   function serializeBookings(): SerializedBooking[] {
@@ -141,23 +143,35 @@ export function usePersistence() {
     }
   }
 
-  function saveToLocalStorage(): void {
+  function saveBspList(): void {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify(buildStateSnapshot()))
+      localStorage.setItem(BSP_LIST_KEY, JSON.stringify(bspList.value))
+    } catch {}
+  }
+
+  function saveToLocalStorage(): void {
+    const bspId = currentBspId.value
+    if (!bspId) return
+    try {
+      localStorage.setItem(lsKey(bspId), JSON.stringify(buildStateSnapshot()))
+      updateCurrentBspMeta()
+      saveBspList()
     } catch (e) {
       console.warn('localStorage save fehlgeschlagen:', e)
     }
   }
 
   async function saveFilesToIdb(): Promise<void> {
-    if (isSavingFiles) return
+    const bspId = currentBspId.value
+    if (!bspId || isSavingFiles) return
     isSavingFiles = true
     try {
+      const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
+      const bspFiles = allFiles.filter(f => f.bspId === bspId)
       const currentDocIds = new Set(documents.value.map(d => d.id))
-      const storedFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
-      const storedMap = new Map(storedFiles.map(f => [f.id, f]))
+      const storedMap = new Map(bspFiles.map(f => [f.id, f]))
 
-      for (const sf of storedFiles) {
+      for (const sf of bspFiles) {
         if (!currentDocIds.has(sf.id)) {
           await idbDelete(FILES_STORE, sf.id)
         }
@@ -167,6 +181,7 @@ export function usePersistence() {
         if (!storedMap.has(doc.id)) {
           const entry: StoredFileEntry = {
             id: doc.id,
+            bspId,
             name: doc.name,
             type: doc.type,
             mimeType: doc.file.type,
@@ -195,13 +210,13 @@ export function usePersistence() {
     debouncedFileSave()
   }
 
-  async function loadState(): Promise<boolean> {
+  async function loadBspState(bspId: string): Promise<boolean> {
     try {
-      const raw = localStorage.getItem(LS_KEY)
+      const raw = localStorage.getItem(lsKey(bspId))
       if (!raw) return false
 
       const state = JSON.parse(raw)
-      if (!state || (!state.bookings?.length && !state.documentMeta?.length)) return false
+      if (!state) return false
 
       currentStep.value = state.currentStep ?? 1
       columnMapping.value = state.columnMapping ?? { date: null, amount: null, description: null, remarks: null }
@@ -218,35 +233,34 @@ export function usePersistence() {
         deserializeBookings(state.bookings)
       }
 
-      const storedFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
-      const fileMap = new Map(storedFiles.map(f => [f.id, f]))
+      const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
+      const fileMap = new Map(allFiles.filter(f => f.bspId === bspId).map(f => [f.id, f]))
 
       const docMeta: Array<any> = state.documentMeta ?? []
-      documents.value = docMeta
-        .map((meta: any) => {
-          const stored = fileMap.get(meta.id)
-          if (!stored) {
-            return {
-              id: meta.id,
-              file: new File([], meta.name || 'unknown', { type: meta.type === 'pdf' ? 'application/pdf' : 'image/jpeg' }),
-              name: meta.name,
-              type: meta.type,
-              extractedText: meta.extractedText ?? '',
-              thumbnailDataUrl: meta.thumbnailDataUrl ?? null,
-              ocrProcessed: meta.ocrProcessed ?? false,
-            }
-          }
-          const file = new File([stored.data], stored.name, { type: stored.mimeType })
+      documents.value = docMeta.map((meta: any) => {
+        const stored = fileMap.get(meta.id)
+        if (!stored) {
           return {
             id: meta.id,
-            file,
+            file: new File([], meta.name || 'unknown', { type: meta.type === 'pdf' ? 'application/pdf' : 'image/jpeg' }),
             name: meta.name,
             type: meta.type,
-            extractedText: stored.extractedText ?? meta.extractedText ?? '',
-            thumbnailDataUrl: stored.thumbnailDataUrl ?? meta.thumbnailDataUrl ?? null,
-            ocrProcessed: stored.ocrProcessed ?? meta.ocrProcessed ?? false,
+            extractedText: meta.extractedText ?? '',
+            thumbnailDataUrl: meta.thumbnailDataUrl ?? null,
+            ocrProcessed: meta.ocrProcessed ?? false,
           }
-        })
+        }
+        const file = new File([stored.data], stored.name, { type: stored.mimeType })
+        return {
+          id: meta.id,
+          file,
+          name: meta.name,
+          type: meta.type,
+          extractedText: stored.extractedText ?? meta.extractedText ?? '',
+          thumbnailDataUrl: stored.thumbnailDataUrl ?? meta.thumbnailDataUrl ?? null,
+          ocrProcessed: stored.ocrProcessed ?? meta.ocrProcessed ?? false,
+        }
+      })
 
       return true
     } catch (e) {
@@ -255,10 +269,137 @@ export function usePersistence() {
     }
   }
 
-  async function clearStorage(): Promise<void> {
+  async function loadInitial(): Promise<boolean> {
     try {
-      localStorage.removeItem(LS_KEY)
-      await idbClear(FILES_STORE)
+      const raw = localStorage.getItem(BSP_LIST_KEY)
+      if (raw) {
+        bspList.value = JSON.parse(raw) as BspMeta[]
+      }
+
+      // Migration: old single-BSP state
+      const oldState = localStorage.getItem('bsp-state')
+      if (oldState && bspList.value.length === 0) {
+        const migrationId = `bsp-${Date.now()}`
+        localStorage.setItem(lsKey(migrationId), oldState)
+        localStorage.removeItem('bsp-state')
+
+        const parsed = JSON.parse(oldState)
+        bspList.value.push({
+          id: migrationId,
+          name: parsed.tableFileName || 'Mein BSP',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          bookingCount: parsed.bookings?.length ?? 0,
+          documentCount: parsed.documentMeta?.length ?? 0,
+          assignedCount: parsed.bookings?.filter((b: any) => b.documentId)?.length ?? 0,
+        })
+
+        // Migrate files: add bspId to existing entries
+        const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
+        for (const f of allFiles) {
+          if (!f.bspId) {
+            f.bspId = migrationId
+            await idbPut(FILES_STORE, f)
+          }
+        }
+
+        saveBspList()
+        currentBspId.value = migrationId
+        await loadBspState(migrationId)
+        activeView.value = 'editor'
+        return true
+      }
+
+      if (bspList.value.length === 0) {
+        activeView.value = 'overview'
+        return false
+      }
+
+      // Load last active BSP from localStorage
+      const lastActiveId = localStorage.getItem('bsp-active-id')
+      const targetId = lastActiveId && bspList.value.some(b => b.id === lastActiveId)
+        ? lastActiveId
+        : bspList.value[0].id
+
+      currentBspId.value = targetId
+      await loadBspState(targetId)
+      activeView.value = 'editor'
+      return true
+    } catch (e) {
+      console.warn('Initial load fehlgeschlagen:', e)
+      activeView.value = 'overview'
+      return false
+    }
+  }
+
+  async function switchToBsp(bspId: string): Promise<void> {
+    if (currentBspId.value) {
+      saveToLocalStorage()
+      await saveFilesToIdb()
+    }
+
+    clearEditorState()
+    currentBspId.value = bspId
+    localStorage.setItem('bsp-active-id', bspId)
+    await loadBspState(bspId)
+    activeView.value = 'editor'
+  }
+
+  function createNewBsp(name?: string): string {
+    if (currentBspId.value) {
+      saveToLocalStorage()
+    }
+
+    const id = `bsp-${Date.now()}`
+    const meta: BspMeta = {
+      id,
+      name: name || `BSP ${new Date().toLocaleDateString('de-DE')}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      bookingCount: 0,
+      documentCount: 0,
+      assignedCount: 0,
+    }
+    bspList.value.push(meta)
+    saveBspList()
+
+    clearEditorState()
+    currentBspId.value = id
+    localStorage.setItem('bsp-active-id', id)
+    activeView.value = 'editor'
+    return id
+  }
+
+  async function deleteBsp(bspId: string): Promise<void> {
+    localStorage.removeItem(lsKey(bspId))
+
+    const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
+    for (const f of allFiles) {
+      if (f.bspId === bspId) {
+        await idbDelete(FILES_STORE, f.id)
+      }
+    }
+
+    bspList.value = bspList.value.filter(b => b.id !== bspId)
+    saveBspList()
+
+    if (currentBspId.value === bspId) {
+      clearEditorState()
+      currentBspId.value = null
+      activeView.value = 'overview'
+    }
+  }
+
+  async function clearBspStorage(bspId: string | null): Promise<void> {
+    if (!bspId) return
+    try {
+      localStorage.removeItem(lsKey(bspId))
+      const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
+      for (const f of allFiles) {
+        if (f.bspId === bspId) {
+          await idbDelete(FILES_STORE, f.id)
+        }
+      }
     } catch (e) {
       console.warn('Löschen fehlgeschlagen:', e)
     }
@@ -279,15 +420,30 @@ export function usePersistence() {
         filters,
         sort,
       ],
-      () => saveAll(),
+      () => {
+        if (currentBspId.value && activeView.value === 'editor') {
+          saveAll()
+        }
+      },
       { deep: true },
     )
 
-    window.addEventListener('beforeunload', () => saveToLocalStorage())
+    window.addEventListener('beforeunload', () => {
+      if (currentBspId.value) saveToLocalStorage()
+    })
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') saveToLocalStorage()
+      if (document.visibilityState === 'hidden' && currentBspId.value) saveToLocalStorage()
     })
   }
 
-  return { saveState: saveAll, loadState, clearStorage, startWatching }
+  return {
+    saveState: saveAll,
+    loadInitial,
+    switchToBsp,
+    createNewBsp,
+    deleteBsp,
+    clearBspStorage,
+    startWatching,
+    saveBspList,
+  }
 }

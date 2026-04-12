@@ -35,6 +35,9 @@ import {
   faTable,
   faArrowUpFromBracket,
   faBan,
+  faFolderOpen,
+  faGift,
+  faPen,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -72,6 +75,9 @@ library.add(
   faTable,
   faArrowUpFromBracket,
   faBan,
+  faFolderOpen,
+  faGift,
+  faPen,
 )
 
 export default defineNuxtPlugin((nuxtApp) => {

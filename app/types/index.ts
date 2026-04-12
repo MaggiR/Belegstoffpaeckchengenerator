@@ -45,3 +45,15 @@ export interface SortState {
   field: SortField
   order: SortOrder
 }
+
+export type AppView = 'overview' | 'editor'
+
+export interface BspMeta {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  bookingCount: number
+  documentCount: number
+  assignedCount: number
+}

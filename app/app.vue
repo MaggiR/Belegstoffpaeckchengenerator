@@ -1,33 +1,100 @@
 <script setup lang="ts">
 const { init } = useDarkMode()
-const { currentStep } = useAppState()
-const { loadState, startWatching } = usePersistence()
+const { currentStep, activeView, currentBspId } = useAppState()
+const { loadInitial, startWatching, switchToBsp } = usePersistence()
 
 const restored = ref(false)
+let suppressHistory = false
+
+function pushState() {
+  if (suppressHistory) return
+  const state: Record<string, any> = { view: activeView.value }
+  if (activeView.value === 'editor') {
+    state.bspId = currentBspId.value
+    state.step = currentStep.value
+  }
+  const url = activeView.value === 'overview' ? '#overview' : `#bsp/${currentBspId.value}/step/${currentStep.value}`
+  history.pushState(state, '', url)
+}
+
+function replaceState() {
+  const state: Record<string, any> = { view: activeView.value }
+  if (activeView.value === 'editor') {
+    state.bspId = currentBspId.value
+    state.step = currentStep.value
+  }
+  const url = activeView.value === 'overview' ? '#overview' : `#bsp/${currentBspId.value}/step/${currentStep.value}`
+  history.replaceState(state, '', url)
+}
+
+async function handlePopState(event: PopStateEvent) {
+  const state = event.state
+  if (!state) return
+
+  suppressHistory = true
+  try {
+    if (state.view === 'overview') {
+      activeView.value = 'overview'
+    } else if (state.view === 'editor' && state.bspId) {
+      if (state.bspId !== currentBspId.value) {
+        await switchToBsp(state.bspId)
+      } else {
+        activeView.value = 'editor'
+      }
+      if (state.step) {
+        currentStep.value = state.step
+      }
+    }
+  } finally {
+    suppressHistory = false
+  }
+}
 
 onMounted(async () => {
   init()
-  await loadState()
+  await loadInitial()
   restored.value = true
+  replaceState()
   await nextTick()
   startWatching()
+
+  window.addEventListener('popstate', handlePopState)
+
+  watch([activeView, currentStep, currentBspId], () => {
+    if (restored.value) pushState()
+  })
+})
+
+onUnmounted(() => {
+  window.removeEventListener('popstate', handlePopState)
 })
 </script>
 
 <template>
   <div class="min-h-screen bg-gray-50 dark:bg-gray-950 transition-colors duration-300">
     <AppHeader />
-    <StepIndicator />
 
-    <main v-if="restored" class="px-4 sm:px-6 pb-12">
-      <Transition name="fade" mode="out-in">
-        <ImportStep v-if="currentStep === 1" key="import" />
-        <AssignmentStep v-else-if="currentStep === 2" key="assignment" />
-        <ExportStep v-else-if="currentStep === 3" key="export" />
-      </Transition>
-    </main>
-    <div v-else class="flex items-center justify-center py-24">
-      <font-awesome-icon icon="spinner" class="text-primary-500 text-2xl animate-spin" />
+    <template v-if="restored">
+      <template v-if="activeView === 'overview'">
+        <main class="pb-12">
+          <BspOverview />
+        </main>
+      </template>
+
+      <template v-else>
+        <StepIndicator />
+        <main class="pb-12">
+          <Transition name="fade" mode="out-in">
+            <ImportStep v-if="currentStep === 1" key="import" />
+            <AssignmentStep v-else key="assignment" />
+          </Transition>
+        </main>
+        <ExportFab />
+      </template>
+    </template>
+    <div v-else class="flex flex-col items-center justify-center py-24 gap-3">
+      <font-awesome-icon icon="gift" class="text-primary-500 text-3xl" />
+      <font-awesome-icon icon="spinner" class="text-primary-400 text-lg animate-spin" />
     </div>
 
     <footer class="border-t border-gray-200 dark:border-gray-800 py-4 mt-8 text-center">

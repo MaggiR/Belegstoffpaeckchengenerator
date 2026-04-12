@@ -5,7 +5,13 @@ import type {
   ViewMode,
   FilterState,
   SortState,
+  AppView,
+  BspMeta,
 } from '~/types'
+
+const activeView = ref<AppView>('editor')
+const currentBspId = ref<string | null>(null)
+const bspList = ref<BspMeta[]>([])
 
 const currentStep = ref(1)
 const bookings = ref<Booking[]>([])
@@ -171,7 +177,7 @@ export function useAppState() {
     documents.value = documents.value.filter(d => d.id !== docId)
   }
 
-  async function reset() {
+  function clearEditorState() {
     currentStep.value = 1
     bookings.value = []
     documents.value = []
@@ -184,13 +190,39 @@ export function useAppState() {
     isProcessing.value = false
     processingMessage.value = ''
     processingProgress.value = 0
+  }
+
+  async function reset() {
+    clearEditorState()
+    const meta = bspList.value.find(b => b.id === currentBspId.value)
+    if (meta) {
+      meta.bookingCount = 0
+      meta.documentCount = 0
+      meta.assignedCount = 0
+      meta.updatedAt = new Date().toISOString()
+    }
     try {
-      const { clearStorage } = usePersistence()
-      await clearStorage()
+      const { clearBspStorage, saveBspList } = usePersistence()
+      await clearBspStorage(currentBspId.value)
+      saveBspList()
     } catch {}
   }
 
+  function updateCurrentBspMeta() {
+    if (!currentBspId.value) return
+    const meta = bspList.value.find(b => b.id === currentBspId.value)
+    if (meta) {
+      meta.updatedAt = new Date().toISOString()
+      meta.bookingCount = bookings.value.length
+      meta.documentCount = documents.value.length
+      meta.assignedCount = bookings.value.filter(b => b.documentId !== null).length
+    }
+  }
+
   return {
+    activeView,
+    currentBspId,
+    bspList,
     currentStep,
     bookings,
     documents,
@@ -218,6 +250,8 @@ export function useAppState() {
     addDocuments,
     removeDocument,
     toggleNoDocRequired,
+    clearEditorState,
+    updateCurrentBspMeta,
     reset,
   }
 }

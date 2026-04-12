@@ -4,17 +4,18 @@ const {
   bookings,
   stats,
   getDocument,
-  reset,
 } = useAppState()
 
 const { exportBsp } = usePdfUtils()
+const { createNewBsp, saveState } = usePersistence()
 
 const isExporting = ref(false)
 const exportDone = ref(false)
 const error = ref('')
 
-async function startNew() {
-  await reset()
+function startNew() {
+  saveState()
+  createNewBsp()
 }
 
 const sortedBookingsWithDocs = computed(() =>
@@ -55,7 +56,8 @@ async function download() {
   <div class="max-w-2xl mx-auto space-y-8">
     <!-- Zusammenfassung -->
     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-8 text-center">
-      <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+      <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-6 flex items-center justify-center gap-3">
+        <font-awesome-icon icon="gift" class="text-primary-500" />
         Belegstoffpäckchen exportieren
       </h2>
 

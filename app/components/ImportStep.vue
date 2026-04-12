@@ -8,6 +8,8 @@ const {
   showColumnMapper,
   tableFileName,
   currentStep,
+  currentBspId,
+  bspList,
   isProcessing,
   processingMessage,
 } = useAppState()
@@ -29,6 +31,11 @@ async function handleTableUpload(file: File) {
     allTableRows.value = rows
     tablePreviewRows.value = rows.slice(0, 50)
     tableFileName.value = file.name
+
+    const meta = bspList.value.find(b => b.id === currentBspId.value)
+    if (meta) {
+      meta.name = file.name.replace(/\.[^.]+$/, '')
+    }
 
     const detected = detectColumns(headers, rows)
     columnMapping.value = detected
@@ -109,7 +116,7 @@ function applyMapping(importFilters?: { dateFrom: string | null; dateTo: string 
 </script>
 
 <template>
-  <div class="max-w-3xl mx-auto space-y-8">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 space-y-8">
     <section>
       <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">
         <font-awesome-icon icon="table" class="text-primary-500 mr-2" />

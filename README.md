@@ -12,6 +12,7 @@ BSPs sind Sammlungen von Buchhaltungsbelegen in chronologischer Reihenfolge zur 
 3. **Export**: Das fertige Belegstoffpäckchen kann anschießend per Knopfdruck als PDF heruntergeladen werden.
 
 ## Features
+- Übersicht aller angelegten BSPs und persistente Speicherung auf dem lokalen Endgerät.
 - Kann die Buchungstabelle nicht automatisch ausgelesen werden, kann der User manuell die Spalten für Buchungsdatum, -wert, und -text auswählen, optional auch eine Spalte mit weiteren Informationen (Buchungstext oder Bemerkungen).
 - Es kann zwischen zwei Ansichten gewechselt werden: Die Listenansicht, bei der alle Buchungen kompakt dargestellt werden können, und die Kachelansicht, bei der für jedes PDF eine grafische Vorschau der ersten Seite angezeigt wird.
 - Die Buchungsansicht kann gefiltert werden, u.a. nach ausgehenden bzw. eingehenden Buchungen, nach Buchungen mit bzw. ohne Beleg und nach Buchungen bestimmter Beträge.
