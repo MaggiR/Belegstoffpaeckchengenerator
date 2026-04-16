@@ -112,12 +112,19 @@ const sortedBsps = computed(() =>
                 : 'bg-green-50 dark:bg-green-900/20'"
             >
               <div
-                class="text-lg font-bold"
+                class="text-lg font-bold flex items-center justify-center h-7"
                 :class="(bsp.missingCount ?? 0) > 0
                   ? 'text-amber-600 dark:text-amber-400'
                   : 'text-green-600 dark:text-green-400'"
               >
-                {{ bsp.missingCount ?? 0 }}
+                <template v-if="(bsp.missingCount ?? 0) > 0">
+                  {{ bsp.missingCount }}
+                </template>
+                <font-awesome-icon
+                  v-else
+                  icon="check"
+                  class="w-4 h-4"
+                />
               </div>
               <div class="text-[10px] text-gray-500 dark:text-gray-400">
                 {{ (bsp.missingCount ?? 0) > 0 ? 'Ohne Beleg' : 'Vollständig' }}

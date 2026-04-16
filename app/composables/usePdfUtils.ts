@@ -11,11 +11,52 @@ async function getPdfJs() {
   return pdfjsLib
 }
 
+/** Fehler, den Aufrufer fangen können, um einen Passwort-Dialog zu öffnen. */
+export class PdfPasswordRequiredError extends Error {
+  constructor(public wrongPassword = false) {
+    super(wrongPassword ? 'Falsches Passwort' : 'Passwort erforderlich')
+    this.name = 'PdfPasswordRequiredError'
+  }
+}
+
+/**
+ * Erkennt, ob ein PDF mit /Encrypt versehen ist. Wir scannen dafür das Trailer-Segment
+ * direkt in den Bytes – zuverlässig unabhängig davon, ob pdf.js es öffnen kann.
+ */
+export async function isPdfEncrypted(file: File): Promise<boolean> {
+  if (file.type !== 'application/pdf') return false
+  const buffer = await file.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  // Trailer liegt am Ende – letzte 4 KB reichen verlässlich.
+  const tailStart = Math.max(0, bytes.length - 4096)
+  let ascii = ''
+  for (let i = tailStart; i < bytes.length; i++) {
+    ascii += String.fromCharCode(bytes[i])
+  }
+  // \b verhindert Treffer auf /EncryptMetadata (dort endet das Wort nach "Metadata")
+  return /\/Encrypt\b/.test(ascii)
+}
+
 export function usePdfUtils() {
-  async function extractTextFromPdf(file: File): Promise<string> {
+  async function openPdfDocument(file: File, password?: string) {
     const pdfjs = await getPdfJs()
     const arrayBuffer = await file.arrayBuffer()
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+    try {
+      return await pdfjs.getDocument({
+        data: new Uint8Array(arrayBuffer),
+        password: password || '',
+      }).promise
+    } catch (e: any) {
+      if (e?.name === 'PasswordException') {
+        // pdfjs setzt code=1 (NEED_PASSWORD) bzw. code=2 (INCORRECT_PASSWORD)
+        throw new PdfPasswordRequiredError(e.code === 2)
+      }
+      throw e
+    }
+  }
+
+  async function extractTextFromPdf(file: File, password?: string): Promise<string> {
+    const pdf = await openPdfDocument(file, password)
     const texts: string[] = []
 
     for (let i = 1; i <= pdf.numPages; i++) {
@@ -30,7 +71,12 @@ export function usePdfUtils() {
     return texts.join('\n')
   }
 
-  async function generateThumbnail(file: File, maxWidth = 400, maxHeight = 560): Promise<string> {
+  async function generateThumbnail(
+    file: File,
+    maxWidth = 400,
+    maxHeight = 560,
+    password?: string,
+  ): Promise<string> {
     if (file.type.startsWith('image/')) {
       return new Promise((resolve) => {
         const img = new Image()
@@ -48,9 +94,7 @@ export function usePdfUtils() {
       })
     }
 
-    const pdfjs = await getPdfJs()
-    const arrayBuffer = await file.arrayBuffer()
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+    const pdf = await openPdfDocument(file, password)
     const page = await pdf.getPage(1)
     const viewport = page.getViewport({ scale: 1 })
     const scale = Math.min(maxWidth / viewport.width, maxHeight / viewport.height, 1)
@@ -65,10 +109,8 @@ export function usePdfUtils() {
     return canvas.toDataURL('image/jpeg', 0.7)
   }
 
-  async function renderPdfPage(file: File, pageNum: number, scale = 1.5): Promise<string> {
-    const pdfjs = await getPdfJs()
-    const arrayBuffer = await file.arrayBuffer()
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+  async function renderPdfPage(file: File, pageNum: number, scale = 1.5, password?: string): Promise<string> {
+    const pdf = await openPdfDocument(file, password)
     const page = await pdf.getPage(pageNum)
     const viewport = page.getViewport({ scale })
 
@@ -81,18 +123,14 @@ export function usePdfUtils() {
     return canvas.toDataURL('image/png')
   }
 
-  async function getPdfPageCount(file: File): Promise<number> {
-    const pdfjs = await getPdfJs()
-    const arrayBuffer = await file.arrayBuffer()
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+  async function getPdfPageCount(file: File, password?: string): Promise<number> {
+    const pdf = await openPdfDocument(file, password)
     return pdf.numPages
   }
 
   // Load a PDF once and return a handle that can render individual pages without re-parsing.
-  async function loadPdf(file: File) {
-    const pdfjs = await getPdfJs()
-    const arrayBuffer = await file.arrayBuffer()
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+  async function loadPdf(file: File, password?: string) {
+    const pdf = await openPdfDocument(file, password)
 
     async function pageDimensions(pageNum: number, scale = 1) {
       const page = await pdf.getPage(pageNum)
@@ -119,6 +157,54 @@ export function usePdfUtils() {
     }
   }
 
+  /**
+   * Rastert alle Seiten des Quell-PDFs via pdf.js in den mergedPdf. Fallback für PDFs,
+   * deren Inhalt (z. B. wegen /Encrypt) von pdf-lib nicht korrekt per copyPages
+   * übernommen werden kann.
+   */
+  async function rasterizeIntoMergedPdf(
+    file: File,
+    mergedPdf: PDFDocument,
+    password?: string,
+  ) {
+    const RENDER_SCALE = 2.5 // ~180 DPI
+    const JPEG_QUALITY = 0.9
+
+    const pdf = await openPdfDocument(file, password)
+    try {
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i)
+        const viewport = page.getViewport({ scale: RENDER_SCALE })
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.ceil(viewport.width)
+        canvas.height = Math.ceil(viewport.height)
+        const ctx = canvas.getContext('2d')!
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        await page.render({ canvasContext: ctx, viewport }).promise
+
+        const blob: Blob = await new Promise((resolve, reject) => {
+          canvas.toBlob(
+            b => b ? resolve(b) : reject(new Error('canvas.toBlob failed')),
+            'image/jpeg',
+            JPEG_QUALITY,
+          )
+        })
+        const jpegBytes = await blob.arrayBuffer()
+        const image = await mergedPdf.embedJpg(jpegBytes)
+
+        const pageWidth = viewport.width / RENDER_SCALE
+        const pageHeight = viewport.height / RENDER_SCALE
+        const newPage = mergedPdf.addPage([pageWidth, pageHeight])
+        newPage.drawImage(image, { x: 0, y: 0, width: pageWidth, height: pageHeight })
+
+        page.cleanup()
+      }
+    } finally {
+      await pdf.destroy()
+    }
+  }
+
   async function exportBsp(
     sortedBookings: Booking[],
     getDocumentFile: (id: string) => DocumentFile | undefined,
@@ -133,9 +219,23 @@ export function usePdfUtils() {
       const fileBytes = await doc.file.arrayBuffer()
 
       if (doc.type === 'pdf') {
-        const sourcePdf = await PDFDocument.load(fileBytes, { ignoreEncryption: true })
-        const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices())
-        pages.forEach(page => mergedPdf.addPage(page))
+        if (doc.locked) {
+          // Noch nicht entsperrt – nicht exportierbar. Überspringen statt Crash.
+          console.warn(`Dokument "${doc.name}" ist noch passwortgeschützt und wird übersprungen.`)
+          continue
+        }
+        if (doc.encrypted) {
+          // Verschlüsselte PDFs (z. B. STRATO-Rechnungen) kann pdf-lib nicht entschlüsselt
+          // weitergeben – copyPages würde die chiffrierten Streams 1:1 in das unverschlüsselte
+          // Ziel-PDF kopieren, was Acrobat mit "Eingebettete Schrift konnte nicht entnommen
+          // werden" quittiert und Seiten leer lässt. Wir rastern diese PDFs stattdessen über
+          // pdf.js, das die Entschlüsselung beherrscht.
+          await rasterizeIntoMergedPdf(doc.file, mergedPdf, doc.password)
+        } else {
+          const sourcePdf = await PDFDocument.load(fileBytes, { ignoreEncryption: true })
+          const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices())
+          pages.forEach(page => mergedPdf.addPage(page))
+        }
       } else {
         let image
         if (doc.file.type === 'image/jpeg' || doc.file.type === 'image/jpg') {
@@ -162,10 +262,6 @@ export function usePdfUtils() {
       }
     }
 
-    // useObjectStreams: false verhindert komprimierte Object-Streams, die Adobe Acrobat
-    // bei subsettierten CID-Fonts (z. B. DejaVuSansMono in STRATO-Rechnungen) nicht
-    // zuverlässig entpacken kann – der sonst auftretende Fehler "Die eingebettete Schrift
-    // konnte nicht entnommen werden" und leere Seiten werden so vermieden.
     const pdfBytes = await mergedPdf.save({ useObjectStreams: false })
     return new Blob([pdfBytes], { type: 'application/pdf' })
   }
@@ -177,5 +273,6 @@ export function usePdfUtils() {
     getPdfPageCount,
     loadPdf,
     exportBsp,
+    isPdfEncrypted,
   }
 }

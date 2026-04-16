@@ -67,6 +67,9 @@ interface StoredFileEntry {
   extractedText: string
   thumbnailDataUrl: string | null
   ocrProcessed: boolean
+  encrypted?: boolean
+  locked?: boolean
+  password?: string
   data: ArrayBuffer
 }
 
@@ -141,6 +144,9 @@ export function usePersistence() {
         extractedText: d.extractedText,
         thumbnailDataUrl: d.thumbnailDataUrl,
         ocrProcessed: d.ocrProcessed,
+        encrypted: d.encrypted,
+        locked: d.locked,
+        password: d.password,
       })),
     }
   }
@@ -180,7 +186,8 @@ export function usePersistence() {
       }
 
       for (const doc of documents.value) {
-        if (!storedMap.has(doc.id)) {
+        const stored = storedMap.get(doc.id)
+        if (!stored) {
           const entry: StoredFileEntry = {
             id: doc.id,
             bspId,
@@ -190,9 +197,30 @@ export function usePersistence() {
             extractedText: doc.extractedText,
             thumbnailDataUrl: doc.thumbnailDataUrl,
             ocrProcessed: doc.ocrProcessed,
+            encrypted: doc.encrypted,
+            locked: doc.locked,
+            password: doc.password,
             data: await doc.file.arrayBuffer(),
           }
           await idbPut(FILES_STORE, entry)
+        } else if (
+          stored.extractedText !== doc.extractedText
+          || stored.thumbnailDataUrl !== doc.thumbnailDataUrl
+          || stored.ocrProcessed !== doc.ocrProcessed
+          || stored.encrypted !== doc.encrypted
+          || stored.locked !== doc.locked
+          || stored.password !== doc.password
+        ) {
+          // Metadaten aktualisieren (z. B. nach Entschlüsselung – Thumbnail/Text/Passwort).
+          await idbPut(FILES_STORE, {
+            ...stored,
+            extractedText: doc.extractedText,
+            thumbnailDataUrl: doc.thumbnailDataUrl,
+            ocrProcessed: doc.ocrProcessed,
+            encrypted: doc.encrypted,
+            locked: doc.locked,
+            password: doc.password,
+          })
         }
       }
     } catch (e) {
@@ -250,6 +278,9 @@ export function usePersistence() {
             extractedText: meta.extractedText ?? '',
             thumbnailDataUrl: meta.thumbnailDataUrl ?? null,
             ocrProcessed: meta.ocrProcessed ?? false,
+            encrypted: meta.encrypted ?? false,
+            locked: meta.locked ?? false,
+            password: meta.password,
           }
         }
         const file = new File([stored.data], stored.name, { type: stored.mimeType })
@@ -261,6 +292,9 @@ export function usePersistence() {
           extractedText: stored.extractedText ?? meta.extractedText ?? '',
           thumbnailDataUrl: stored.thumbnailDataUrl ?? meta.thumbnailDataUrl ?? null,
           ocrProcessed: stored.ocrProcessed ?? meta.ocrProcessed ?? false,
+          encrypted: stored.encrypted ?? meta.encrypted ?? false,
+          locked: stored.locked ?? meta.locked ?? false,
+          password: stored.password ?? meta.password,
         }
       })
 

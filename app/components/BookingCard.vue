@@ -23,6 +23,7 @@ const emit = defineEmits<{
   'toggle-no-doc': [bookingId: string]
   'toggle-verified': [bookingId: string]
   'unassign': [bookingId: string]
+  'unlock-doc': [docId: string]
 }>()
 
 const { getDocumentForBooking } = useAppState()
@@ -303,37 +304,55 @@ const statusLabel = computed(() => {
       <!-- Zugeordneter Beleg (wie Sidebar-Darstellung) -->
       <div
         v-else-if="doc"
-        class="flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-grab active:cursor-grabbing group/doc transition-colors"
-        :class="booking.verified
-          ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700'
-          : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'"
-        draggable="true"
-        @dragstart="onDocDragStart"
-        @click.stop="emit('preview', booking.id)"
+        class="flex items-center gap-2 px-2 py-1.5 rounded-lg border group/doc transition-colors"
+        :class="doc.locked
+          ? 'bg-amber-50 dark:bg-amber-900/15 border-amber-300 dark:border-amber-700 cursor-pointer hover:border-amber-400'
+          : booking.verified
+            ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700 cursor-grab active:cursor-grabbing'
+            : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 cursor-grab active:cursor-grabbing'"
+        :draggable="!doc.locked"
+        :title="doc.locked ? 'Passwortgeschützt – zum Entsperren klicken' : undefined"
+        @dragstart="doc.locked ? $event.preventDefault() : onDocDragStart($event)"
+        @click.stop="doc.locked ? emit('unlock-doc', doc.id) : emit('preview', booking.id)"
       >
-        <div class="w-7 h-9 flex-shrink-0 rounded overflow-hidden bg-white dark:bg-gray-900">
+        <div
+          class="w-7 h-9 flex-shrink-0 rounded overflow-hidden flex items-center justify-center"
+          :class="doc.locked
+            ? 'bg-amber-100 dark:bg-amber-900/30'
+            : 'bg-white dark:bg-gray-900'"
+        >
+          <font-awesome-icon
+            v-if="doc.locked"
+            icon="lock"
+            class="text-amber-500 dark:text-amber-400 text-xs"
+          />
           <img
-            v-if="doc.thumbnailDataUrl"
+            v-else-if="doc.thumbnailDataUrl"
             :src="doc.thumbnailDataUrl"
             :alt="doc.name"
             class="w-full h-full object-cover pointer-events-none"
           >
-          <div v-else class="w-full h-full flex items-center justify-center">
-            <font-awesome-icon
-              :icon="doc.type === 'pdf' ? 'file-pdf' : 'file-image'"
-              class="text-green-400 text-[9px]"
-            />
-          </div>
+          <font-awesome-icon
+            v-else
+            :icon="doc.type === 'pdf' ? 'file-pdf' : 'file-image'"
+            class="text-green-400 text-[9px]"
+          />
         </div>
         <span
           class="text-xs flex-1 min-w-0 line-clamp-2 break-all leading-tight"
-          :class="booking.verified ? 'text-emerald-700 dark:text-emerald-300' : 'text-green-700 dark:text-green-400'"
+          :class="doc.locked
+            ? 'text-amber-700 dark:text-amber-300 font-medium'
+            : booking.verified
+              ? 'text-emerald-700 dark:text-emerald-300'
+              : 'text-green-700 dark:text-green-400'"
         >
           {{ stripExtension(doc.name) }}
         </span>
         <button
           class="w-5 h-5 flex-shrink-0 rounded hover:text-red-500 flex items-center justify-center opacity-0 group-hover/doc:opacity-100 transition-opacity"
-          :class="booking.verified ? 'text-emerald-400' : 'text-green-400'"
+          :class="doc.locked
+            ? 'text-amber-500'
+            : booking.verified ? 'text-emerald-400' : 'text-green-400'"
           title="Beleg entfernen"
           @click.stop="emit('unassign', booking.id)"
         >

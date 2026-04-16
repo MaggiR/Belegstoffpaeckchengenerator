@@ -44,6 +44,9 @@ import {
   faSquareCheck,
   faHand,
   faRotate,
+  faLock,
+  faLockOpen,
+  faKey,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -90,6 +93,9 @@ library.add(
   faSquareCheck,
   faHand,
   faRotate,
+  faLock,
+  faLockOpen,
+  faKey,
 )
 
 export default defineNuxtPlugin((nuxtApp) => {

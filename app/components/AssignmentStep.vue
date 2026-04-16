@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DocumentFile } from '~/types'
+import { PdfPasswordRequiredError } from '~/composables/usePdfUtils'
 
 const {
   viewMode,
@@ -14,6 +15,7 @@ const {
   getDocument,
   addDocuments,
   removeDocument,
+  updateDocument,
   toggleNoDocRequired,
   toggleVerified,
   showColumnMapper,
@@ -26,9 +28,11 @@ const {
 } = useAppState()
 
 const { parseFile, detectColumns, createBookings } = useTableParser()
-const { generateThumbnail, extractTextFromPdf } = usePdfUtils()
+const { generateThumbnail, extractTextFromPdf, isPdfEncrypted } = usePdfUtils()
 const { recognizeText } = useOcr()
 const { autoMatch } = useMatching()
+
+const passwordDialog = ref<{ doc: DocumentFile; wrongPassword: boolean } | null>(null)
 
 const docInputRef = ref<HTMLInputElement>()
 const docDropActive = ref(false)
@@ -141,6 +145,11 @@ function handleToggleVerified(bookingId: string) {
   toggleVerified(bookingId)
 }
 
+function handleUnlockDoc(docId: string) {
+  const doc = documents.value.find(d => d.id === docId)
+  if (doc) openPasswordDialog(doc)
+}
+
 function handleBookingPreview(bookingId: string) {
   const doc = getDocumentForBooking(bookingId)
   if (doc) previewDocDirect.value = doc
@@ -239,27 +248,83 @@ async function processFile(file: File, idx: number): Promise<DocumentFile> {
     ocrProcessed: false,
   }
 
-  try { doc.thumbnailDataUrl = await generateThumbnail(file) } catch {}
+  if (isPdf) {
+    doc.encrypted = await isPdfEncrypted(file).catch(() => false)
+  }
+
+  await enrichPdfMetadata(doc)
+
+  return doc
+}
+
+/**
+ * Versucht Thumbnail + Texterkennung für ein (ggf. verschlüsseltes) Dokument.
+ * Scheitert es an einem Passwort, wird `locked: true` gesetzt, sodass die UI
+ * ein Schloss-Icon anzeigen und den User zur Passworteingabe auffordern kann.
+ */
+async function enrichPdfMetadata(doc: DocumentFile) {
+  try {
+    doc.thumbnailDataUrl = await generateThumbnail(doc.file, 400, 560, doc.password)
+    doc.locked = false
+  } catch (e) {
+    if (e instanceof PdfPasswordRequiredError) {
+      doc.locked = true
+      doc.encrypted = true
+      doc.thumbnailDataUrl = null
+      return
+    }
+  }
 
   try {
-    if (isPdf) {
-      const text = await extractTextFromPdf(file)
+    if (doc.type === 'pdf') {
+      const text = await extractTextFromPdf(doc.file, doc.password)
       doc.extractedText = text
       if (text.trim().length < 20) {
         try {
-          doc.extractedText = await recognizeText(doc.thumbnailDataUrl || file)
+          doc.extractedText = await recognizeText(doc.thumbnailDataUrl || doc.file)
           doc.ocrProcessed = true
         } catch {}
       }
     } else {
       try {
-        doc.extractedText = await recognizeText(file)
+        doc.extractedText = await recognizeText(doc.file)
         doc.ocrProcessed = true
       } catch {}
     }
-  } catch {}
+  } catch (e) {
+    if (e instanceof PdfPasswordRequiredError) {
+      doc.locked = true
+      doc.encrypted = true
+    }
+  }
+}
 
-  return doc
+function openPasswordDialog(doc: DocumentFile, wrongPassword = false) {
+  passwordDialog.value = { doc, wrongPassword }
+}
+
+async function submitPassword(password: string) {
+  const current = passwordDialog.value
+  if (!current) return
+  const doc = current.doc
+  // Arbeitskopie, damit wir bei falschem Passwort keinen Teilzustand hinterlassen
+  const attempt: DocumentFile = { ...doc, password }
+  await enrichPdfMetadata(attempt)
+
+  if (attempt.locked) {
+    passwordDialog.value = { doc, wrongPassword: true }
+    return
+  }
+
+  updateDocument(doc.id, {
+    password,
+    locked: false,
+    encrypted: true,
+    thumbnailDataUrl: attempt.thumbnailDataUrl,
+    extractedText: attempt.extractedText,
+    ocrProcessed: attempt.ocrProcessed,
+  })
+  passwordDialog.value = null
 }
 
 async function handleAdditionalUpload(files: FileList) {
@@ -385,6 +450,7 @@ onBeforeUnmount(() => {
             @unassign="handleInlineUnassign"
             @toggle-no-doc="handleToggleNoDoc"
             @toggle-verified="handleToggleVerified"
+            @unlock-doc="handleUnlockDoc"
           />
         </div>
 
@@ -392,7 +458,7 @@ onBeforeUnmount(() => {
           <template v-for="item in bookingsWithSeparators" :key="item.key">
             <div
               v-if="item.type === 'year' && item.year !== 0"
-              class="pt-4 pb-1 first:pt-0 text-center"
+              class="pt-4 pb-1 first:pt-2 text-center"
             >
               <span class="text-lg font-bold text-gray-900 dark:text-white">
                 {{ item.year }}
@@ -421,6 +487,7 @@ onBeforeUnmount(() => {
                 @unassign="handleInlineUnassign"
                 @toggle-no-doc="handleToggleNoDoc"
                 @toggle-verified="handleToggleVerified"
+                @unlock-doc="handleUnlockDoc"
               />
             </div>
             <BookingCard
@@ -434,6 +501,7 @@ onBeforeUnmount(() => {
               @unassign="handleInlineUnassign"
               @toggle-no-doc="handleToggleNoDoc"
               @toggle-verified="handleToggleVerified"
+              @unlock-doc="handleUnlockDoc"
             />
           </template>
         </div>
@@ -552,26 +620,44 @@ onBeforeUnmount(() => {
           <div
             v-for="doc in unassignedDocuments"
             :key="doc.id"
-            class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-2.5 py-2 flex items-center gap-2.5 cursor-grab active:cursor-grabbing group/doc hover:border-primary-300 dark:hover:border-primary-600 transition-colors"
-            draggable="true"
-            @dragstart="(e) => onSidebarDocDragStart(e, doc.id)"
-            @click.stop="openDocPreview(doc)"
+            class="bg-white dark:bg-gray-800 border rounded-lg px-2.5 py-2 flex items-center gap-2.5 group/doc transition-colors"
+            :class="doc.locked
+              ? 'border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-900/10 cursor-pointer hover:border-amber-400 dark:hover:border-amber-600'
+              : 'border-gray-200 dark:border-gray-700 cursor-grab active:cursor-grabbing hover:border-primary-300 dark:hover:border-primary-600'"
+            :draggable="!doc.locked"
+            :title="doc.locked ? 'Passwortgeschützt – zum Entsperren klicken' : undefined"
+            @dragstart="doc.locked ? $event.preventDefault() : onSidebarDocDragStart($event, doc.id)"
+            @click.stop="doc.locked ? openPasswordDialog(doc) : openDocPreview(doc)"
           >
-            <div class="w-8 h-10 flex-shrink-0 rounded overflow-hidden bg-gray-50 dark:bg-gray-900">
+            <div
+              class="w-8 h-10 flex-shrink-0 rounded overflow-hidden flex items-center justify-center"
+              :class="doc.locked
+                ? 'bg-amber-100 dark:bg-amber-900/30'
+                : 'bg-gray-50 dark:bg-gray-900'"
+            >
+              <font-awesome-icon
+                v-if="doc.locked"
+                icon="lock"
+                class="text-amber-500 dark:text-amber-400 text-sm"
+              />
               <img
-                v-if="doc.thumbnailDataUrl"
+                v-else-if="doc.thumbnailDataUrl"
                 :src="doc.thumbnailDataUrl"
                 :alt="doc.name"
                 class="w-full h-full object-cover pointer-events-none"
               >
-              <div v-else class="w-full h-full flex items-center justify-center">
-                <font-awesome-icon
-                  :icon="doc.type === 'pdf' ? 'file-pdf' : 'file-image'"
-                  class="text-gray-300 dark:text-gray-600 text-[10px]"
-                />
-              </div>
+              <font-awesome-icon
+                v-else
+                :icon="doc.type === 'pdf' ? 'file-pdf' : 'file-image'"
+                class="text-gray-300 dark:text-gray-600 text-[10px]"
+              />
             </div>
-            <span class="text-xs text-gray-700 dark:text-gray-300 flex-1 min-w-0 line-clamp-2 break-all leading-tight">
+            <span
+              class="text-xs flex-1 min-w-0 line-clamp-2 break-all leading-tight"
+              :class="doc.locked
+                ? 'text-amber-700 dark:text-amber-300 font-medium'
+                : 'text-gray-700 dark:text-gray-300'"
+            >
               {{ stripExtension(doc.name) }}
             </span>
             <button
@@ -603,6 +689,15 @@ onBeforeUnmount(() => {
       v-if="previewDocDirect"
       :document="previewDocDirect"
       @close="previewDocDirect = null"
+    />
+
+    <!-- Passwort-Dialog für verschlüsselte PDFs -->
+    <PdfPasswordDialog
+      v-if="passwordDialog"
+      :document-name="passwordDialog.doc.name"
+      :wrong-password="passwordDialog.wrongPassword"
+      @submit="submitPassword"
+      @close="passwordDialog = null"
     />
 
     <!-- Bestätigungsdialog: Alle Zuordnungen lösen -->

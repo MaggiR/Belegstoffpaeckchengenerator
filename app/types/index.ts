@@ -17,6 +17,12 @@ export interface DocumentFile {
   extractedText: string
   thumbnailDataUrl: string | null
   ocrProcessed: boolean
+  /** PDF enthält einen /Encrypt-Eintrag. Beim Export wird in dem Fall rasterisiert. */
+  encrypted?: boolean
+  /** PDF konnte (noch) nicht geöffnet werden – Passwort erforderlich. */
+  locked?: boolean
+  /** Vom Benutzer eingegebenes Passwort (nötig zum Rendern und Rastern). */
+  password?: string
 }
 
 export interface ColumnMapping {

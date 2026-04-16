@@ -107,7 +107,7 @@ async function initialize() {
         img.src = imageUrl.value!
       })
     } else {
-      pdfHandle = await loadPdf(props.document.file)
+      pdfHandle = await loadPdf(props.document.file, props.document.password)
       const dims: PageState[] = []
       for (let i = 1; i <= pdfHandle.numPages; i++) {
         const d = await pdfHandle.pageDimensions(i, 1)

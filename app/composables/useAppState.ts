@@ -194,6 +194,12 @@ export function useAppState() {
     documents.value = documents.value.filter(d => d.id !== docId)
   }
 
+  function updateDocument(docId: string, patch: Partial<DocumentFile>) {
+    const doc = documents.value.find(d => d.id === docId)
+    if (!doc) return
+    Object.assign(doc, patch)
+  }
+
   function clearEditorState() {
     currentStep.value = 1
     bookings.value = []
@@ -268,6 +274,7 @@ export function useAppState() {
     unassignAllDocuments,
     addDocuments,
     removeDocument,
+    updateDocument,
     toggleNoDocRequired,
     toggleVerified,
     clearEditorState,
