@@ -113,11 +113,13 @@ export function useAppState() {
     const withDoc = bookings.value.filter(b => b.documentId !== null).length
     const noDocReq = bookings.value.filter(b => b.documentId === null && b.noDocRequired).length
     const missing = bookings.value.filter(b => b.documentId === null && !b.noDocRequired).length
+    const verified = bookings.value.filter(b => b.documentId !== null && b.verified).length
     return {
       total: bookings.value.length,
       withDoc,
       noDocRequired: noDocReq,
       missing,
+      verified,
       totalDocuments: documents.value.length,
       unassigned: unassignedDocuments.value.length,
     }
@@ -137,10 +139,12 @@ export function useAppState() {
     const prevBooking = bookings.value.find(b => b.documentId === documentId)
     if (prevBooking) {
       prevBooking.documentId = null
+      prevBooking.verified = false
     }
     const booking = bookings.value.find(b => b.id === bookingId)
     if (booking) {
       booking.documentId = documentId
+      booking.verified = false
     }
   }
 
@@ -148,12 +152,14 @@ export function useAppState() {
     const booking = bookings.value.find(b => b.id === bookingId)
     if (booking) {
       booking.documentId = null
+      booking.verified = false
     }
   }
 
   function unassignAllDocuments() {
     for (const booking of bookings.value) {
       booking.documentId = null
+      booking.verified = false
     }
   }
 
@@ -163,7 +169,15 @@ export function useAppState() {
       booking.noDocRequired = !booking.noDocRequired
       if (booking.noDocRequired) {
         booking.documentId = null
+        booking.verified = false
       }
+    }
+  }
+
+  function toggleVerified(bookingId: string) {
+    const booking = bookings.value.find(b => b.id === bookingId)
+    if (booking && booking.documentId) {
+      booking.verified = !booking.verified
     }
   }
 
@@ -173,7 +187,10 @@ export function useAppState() {
 
   function removeDocument(docId: string) {
     const booking = bookings.value.find(b => b.documentId === docId)
-    if (booking) booking.documentId = null
+    if (booking) {
+      booking.documentId = null
+      booking.verified = false
+    }
     documents.value = documents.value.filter(d => d.id !== docId)
   }
 
@@ -199,6 +216,7 @@ export function useAppState() {
       meta.bookingCount = 0
       meta.documentCount = 0
       meta.assignedCount = 0
+      meta.missingCount = 0
       meta.updatedAt = new Date().toISOString()
     }
     try {
@@ -216,6 +234,7 @@ export function useAppState() {
       meta.bookingCount = bookings.value.length
       meta.documentCount = documents.value.length
       meta.assignedCount = bookings.value.filter(b => b.documentId !== null).length
+      meta.missingCount = bookings.value.filter(b => b.documentId === null && !b.noDocRequired).length
     }
   }
 
@@ -250,6 +269,7 @@ export function useAppState() {
     addDocuments,
     removeDocument,
     toggleNoDocRequired,
+    toggleVerified,
     clearEditorState,
     updateCurrentBspMeta,
     reset,

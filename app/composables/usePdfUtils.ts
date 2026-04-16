@@ -88,6 +88,37 @@ export function usePdfUtils() {
     return pdf.numPages
   }
 
+  // Load a PDF once and return a handle that can render individual pages without re-parsing.
+  async function loadPdf(file: File) {
+    const pdfjs = await getPdfJs()
+    const arrayBuffer = await file.arrayBuffer()
+    const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+
+    async function pageDimensions(pageNum: number, scale = 1) {
+      const page = await pdf.getPage(pageNum)
+      const viewport = page.getViewport({ scale })
+      return { width: viewport.width, height: viewport.height }
+    }
+
+    async function renderPage(pageNum: number, scale = 2): Promise<string> {
+      const page = await pdf.getPage(pageNum)
+      const viewport = page.getViewport({ scale })
+      const canvas = document.createElement('canvas')
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      const ctx = canvas.getContext('2d')!
+      await page.render({ canvasContext: ctx, viewport }).promise
+      return canvas.toDataURL('image/jpeg', 0.85)
+    }
+
+    return {
+      numPages: pdf.numPages,
+      pageDimensions,
+      renderPage,
+      destroy: () => pdf.destroy(),
+    }
+  }
+
   async function exportBsp(
     sortedBookings: Booking[],
     getDocumentFile: (id: string) => DocumentFile | undefined,
@@ -131,7 +162,11 @@ export function usePdfUtils() {
       }
     }
 
-    const pdfBytes = await mergedPdf.save()
+    // useObjectStreams: false verhindert komprimierte Object-Streams, die Adobe Acrobat
+    // bei subsettierten CID-Fonts (z. B. DejaVuSansMono in STRATO-Rechnungen) nicht
+    // zuverlässig entpacken kann – der sonst auftretende Fehler "Die eingebettete Schrift
+    // konnte nicht entnommen werden" und leere Seiten werden so vermieden.
+    const pdfBytes = await mergedPdf.save({ useObjectStreams: false })
     return new Blob([pdfBytes], { type: 'application/pdf' })
   }
 
@@ -140,6 +175,7 @@ export function usePdfUtils() {
     generateThumbnail,
     renderPdfPage,
     getPdfPageCount,
+    loadPdf,
     exportBsp,
   }
 }

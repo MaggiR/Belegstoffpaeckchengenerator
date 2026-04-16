@@ -113,6 +113,7 @@ export function useTableParser() {
           remarks: mapping.remarks ? (row[mapping.remarks] || '').trim() : '',
           documentId: null,
           noDocRequired: amount > 0,
+          verified: false,
         }
       })
   }

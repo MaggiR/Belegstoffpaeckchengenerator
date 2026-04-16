@@ -18,6 +18,8 @@ import {
   faArrowRight,
   faArrowLeft,
   faMagnifyingGlass,
+  faMagnifyingGlassPlus,
+  faMagnifyingGlassMinus,
   faTrash,
   faEye,
   faSpinner,
@@ -32,12 +34,16 @@ import {
   faLink,
   faLinkSlash,
   faPlus,
+  faMinus,
   faTable,
   faArrowUpFromBracket,
   faBan,
   faFolderOpen,
   faGift,
   faPen,
+  faSquareCheck,
+  faHand,
+  faRotate,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -58,6 +64,8 @@ library.add(
   faArrowRight,
   faArrowLeft,
   faMagnifyingGlass,
+  faMagnifyingGlassPlus,
+  faMagnifyingGlassMinus,
   faTrash,
   faEye,
   faSpinner,
@@ -72,12 +80,16 @@ library.add(
   faLink,
   faLinkSlash,
   faPlus,
+  faMinus,
   faTable,
   faArrowUpFromBracket,
   faBan,
   faFolderOpen,
   faGift,
   faPen,
+  faSquareCheck,
+  faHand,
+  faRotate,
 )
 
 export default defineNuxtPlugin((nuxtApp) => {

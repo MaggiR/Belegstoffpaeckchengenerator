@@ -15,6 +15,7 @@ const {
   addDocuments,
   removeDocument,
   toggleNoDocRequired,
+  toggleVerified,
   showColumnMapper,
   tableHeaders,
   tablePreviewRows,
@@ -43,23 +44,26 @@ const loadingBookingId = ref<string | null>(null)
 
 const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember']
 
+type BookingItem = typeof filteredAndSortedBookings.value[0]
+
 type ListItem =
   | { type: 'year'; year: number; key: string }
-  | { type: 'month'; label: string; key: string }
-  | { type: 'booking'; booking: typeof filteredAndSortedBookings.value[0]; key: string }
+  | { type: 'monthGroup'; label: string; bookings: BookingItem[]; key: string }
+  | { type: 'flat'; booking: BookingItem; key: string }
 
 const bookingsWithSeparators = computed<ListItem[]>(() => {
   const items: ListItem[] = []
 
   if (sort.value.field !== 'date') {
     for (const b of filteredAndSortedBookings.value) {
-      items.push({ type: 'booking', booking: b, key: b.id })
+      items.push({ type: 'flat', booking: b, key: b.id })
     }
     return items
   }
 
   let lastYear: number | null = null
   let lastMonth: number | null = null
+  let currentGroup: Extract<ListItem, { type: 'monthGroup' }> | null = null
 
   for (const b of filteredAndSortedBookings.value) {
     const d = b.date
@@ -70,18 +74,20 @@ const bookingsWithSeparators = computed<ListItem[]>(() => {
         items.push({ type: 'year', year: y, key: `year-${y}` })
         lastYear = y
         lastMonth = null
+        currentGroup = null
       }
       if (m !== lastMonth) {
-        items.push({ type: 'month', label: MONTH_NAMES[m], key: `month-${y}-${m}` })
+        currentGroup = { type: 'monthGroup', label: MONTH_NAMES[m], bookings: [], key: `month-${y}-${m}` }
+        items.push(currentGroup)
         lastMonth = m
       }
-    } else if (lastYear === null) {
-      items.push({ type: 'year', year: 0, key: 'year-unknown' })
-      items.push({ type: 'month', label: 'Ohne Datum', key: 'month-unknown' })
+    } else if (currentGroup === null) {
+      currentGroup = { type: 'monthGroup', label: 'Ohne Datum', bookings: [], key: 'month-unknown' }
+      items.push(currentGroup)
       lastYear = 0
       lastMonth = -1
     }
-    items.push({ type: 'booking', booking: b, key: b.id })
+    currentGroup!.bookings.push(b)
   }
   return items
 })
@@ -129,6 +135,10 @@ function handleInlineUnassign(bookingId: string) {
 
 function handleToggleNoDoc(bookingId: string) {
   toggleNoDocRequired(bookingId)
+}
+
+function handleToggleVerified(bookingId: string) {
+  toggleVerified(bookingId)
 }
 
 function handleBookingPreview(bookingId: string) {
@@ -270,6 +280,87 @@ async function handleAdditionalUpload(files: FileList) {
 
   sidebarUploading.value = false
 }
+
+// Dynamische Messung der FilterBar-Höhe für sticky Monatslabels
+const filterBarRef = ref<{ $el?: HTMLElement } | null>(null)
+const filterBarHeight = ref(64)
+let resizeObserver: ResizeObserver | null = null
+
+// Drag-Autoscroll: beim Ziehen an den oberen/unteren Bildschirmrand scrollt die Seite
+const AUTOSCROLL_ZONE = 110
+const MAX_SCROLL_SPEED = 26
+let autoscrollRAF: number | null = null
+let lastPointerY = 0
+let dragActive = false
+
+function onWindowDragOver(e: DragEvent) {
+  const types = e.dataTransfer?.types
+  const isRelevant =
+    types && (types.includes('application/x-doc-id') || types.includes('Files'))
+  if (!isRelevant) return
+  dragActive = true
+  lastPointerY = e.clientY
+  startAutoScroll()
+}
+
+function stopDrag() {
+  dragActive = false
+  if (autoscrollRAF !== null) {
+    cancelAnimationFrame(autoscrollRAF)
+    autoscrollRAF = null
+  }
+}
+
+function startAutoScroll() {
+  if (autoscrollRAF !== null) return
+  autoscrollRAF = requestAnimationFrame(tickAutoScroll)
+}
+
+function tickAutoScroll() {
+  if (!dragActive) {
+    autoscrollRAF = null
+    return
+  }
+  const vh = window.innerHeight
+  let delta = 0
+  if (lastPointerY < AUTOSCROLL_ZONE) {
+    const factor = 1 - lastPointerY / AUTOSCROLL_ZONE
+    delta = -MAX_SCROLL_SPEED * Math.max(0, factor)
+  } else if (lastPointerY > vh - AUTOSCROLL_ZONE) {
+    const factor = 1 - (vh - lastPointerY) / AUTOSCROLL_ZONE
+    delta = MAX_SCROLL_SPEED * Math.max(0, factor)
+  }
+  if (delta !== 0) {
+    window.scrollBy(0, delta)
+  }
+  autoscrollRAF = requestAnimationFrame(tickAutoScroll)
+}
+
+onMounted(() => {
+  const filterEl = filterBarRef.value?.$el as HTMLElement | undefined
+  if (filterEl) {
+    const updateHeight = () => {
+      filterBarHeight.value = filterEl.offsetHeight
+    }
+    updateHeight()
+    resizeObserver = new ResizeObserver(updateHeight)
+    resizeObserver.observe(filterEl)
+  }
+
+  window.addEventListener('dragover', onWindowDragOver, { passive: true })
+  window.addEventListener('dragend', stopDrag)
+  window.addEventListener('drop', stopDrag)
+  window.addEventListener('mouseup', stopDrag)
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  window.removeEventListener('dragover', onWindowDragOver)
+  window.removeEventListener('dragend', stopDrag)
+  window.removeEventListener('drop', stopDrag)
+  window.removeEventListener('mouseup', stopDrag)
+  stopDrag()
+})
 </script>
 
 <template>
@@ -277,7 +368,7 @@ async function handleAdditionalUpload(files: FileList) {
     <div class="flex gap-4 items-start">
       <!-- Hauptbereich: Buchungen -->
       <div class="flex-1 min-w-0">
-        <FilterBar @open-column-mapper="openColumnMapper" />
+        <FilterBar ref="filterBarRef" @open-column-mapper="openColumnMapper" />
         <div
           v-if="viewMode === 'tile'"
           class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3"
@@ -293,6 +384,7 @@ async function handleAdditionalUpload(files: FileList) {
             @drop-file="handleDropFile"
             @unassign="handleInlineUnassign"
             @toggle-no-doc="handleToggleNoDoc"
+            @toggle-verified="handleToggleVerified"
           />
         </div>
 
@@ -300,22 +392,39 @@ async function handleAdditionalUpload(files: FileList) {
           <template v-for="item in bookingsWithSeparators" :key="item.key">
             <div
               v-if="item.type === 'year' && item.year !== 0"
-              class="pt-4 pb-1 first:pt-0"
+              class="pt-4 pb-1 first:pt-0 text-center"
             >
               <span class="text-lg font-bold text-gray-900 dark:text-white">
                 {{ item.year }}
               </span>
             </div>
-            <div
-              v-else-if="item.type === 'month'"
-              class="pt-2 pb-1 flex items-center gap-3"
-            >
-              <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                {{ item.label }}
-              </span>
+            <div v-else-if="item.type === 'monthGroup'" class="space-y-1.5">
+              <div
+                class="sticky z-20 pt-2 pb-2 flex items-center justify-center pointer-events-none"
+                :style="{ top: filterBarHeight + 'px' }"
+              >
+                <span
+                  class="pointer-events-auto inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider text-gray-600 dark:text-gray-300 bg-white/60 dark:bg-gray-900/50 backdrop-blur-md ring-1 ring-white/60 dark:ring-white/10 shadow-sm shadow-gray-900/5"
+                >
+                  {{ item.label }}
+                </span>
+              </div>
+              <BookingCard
+                v-for="b in item.bookings"
+                :key="b.id"
+                :booking="b"
+                :is-tile="false"
+                :is-loading="loadingBookingId === b.id"
+                @preview="handleBookingPreview"
+                @drop-doc="handleDropDoc"
+                @drop-file="handleDropFile"
+                @unassign="handleInlineUnassign"
+                @toggle-no-doc="handleToggleNoDoc"
+                @toggle-verified="handleToggleVerified"
+              />
             </div>
             <BookingCard
-              v-else-if="item.type === 'booking'"
+              v-else-if="item.type === 'flat'"
               :booking="item.booking"
               :is-tile="false"
               :is-loading="loadingBookingId === item.booking.id"
@@ -324,6 +433,7 @@ async function handleAdditionalUpload(files: FileList) {
               @drop-file="handleDropFile"
               @unassign="handleInlineUnassign"
               @toggle-no-doc="handleToggleNoDoc"
+              @toggle-verified="handleToggleVerified"
             />
           </template>
         </div>

@@ -78,6 +78,7 @@ interface SerializedBooking {
   remarks: string
   documentId: string | null
   noDocRequired: boolean
+  verified?: boolean
 }
 
 function lsKey(bspId: string): string {
@@ -116,6 +117,7 @@ export function usePersistence() {
     bookings.value = data.map(b => ({
       ...b,
       date: b.date ? new Date(b.date) : null,
+      verified: b.verified ?? false,
     }))
   }
 
@@ -276,6 +278,27 @@ export function usePersistence() {
         bspList.value = JSON.parse(raw) as BspMeta[]
       }
 
+      // Einmalig missingCount für alte BSPs ohne gespeicherten Wert nachberechnen
+      let listChanged = false
+      for (const meta of bspList.value) {
+        if (meta.missingCount === undefined) {
+          try {
+            const stateRaw = localStorage.getItem(lsKey(meta.id))
+            if (stateRaw) {
+              const parsed = JSON.parse(stateRaw)
+              const bookings = parsed?.bookings ?? []
+              meta.missingCount = bookings.filter((b: any) => !b.documentId && !b.noDocRequired).length
+            } else {
+              meta.missingCount = 0
+            }
+            listChanged = true
+          } catch {
+            meta.missingCount = 0
+          }
+        }
+      }
+      if (listChanged) saveBspList()
+
       // Migration: old single-BSP state
       const oldState = localStorage.getItem('bsp-state')
       if (oldState && bspList.value.length === 0) {
@@ -292,6 +315,7 @@ export function usePersistence() {
           bookingCount: parsed.bookings?.length ?? 0,
           documentCount: parsed.documentMeta?.length ?? 0,
           assignedCount: parsed.bookings?.filter((b: any) => b.documentId)?.length ?? 0,
+          missingCount: parsed.bookings?.filter((b: any) => !b.documentId && !b.noDocRequired)?.length ?? 0,
         })
 
         // Migrate files: add bspId to existing entries
@@ -359,6 +383,7 @@ export function usePersistence() {
       bookingCount: 0,
       documentCount: 0,
       assignedCount: 0,
+      missingCount: 0,
     }
     bspList.value.push(meta)
     saveBspList()

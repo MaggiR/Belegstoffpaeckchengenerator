@@ -6,6 +6,7 @@ export interface Booking {
   remarks: string
   documentId: string | null
   noDocRequired: boolean
+  verified: boolean
 }
 
 export interface DocumentFile {
@@ -56,4 +57,5 @@ export interface BspMeta {
   bookingCount: number
   documentCount: number
   assignedCount: number
+  missingCount?: number
 }

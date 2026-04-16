@@ -105,11 +105,23 @@ const sortedBsps = computed(() =>
               <div class="text-lg font-bold text-gray-900 dark:text-white">{{ bsp.documentCount }}</div>
               <div class="text-[10px] text-gray-500 dark:text-gray-400">Belege</div>
             </div>
-            <div class="text-center px-2 py-1.5 rounded-lg bg-green-50 dark:bg-green-900/20">
-              <div class="text-lg font-bold text-green-600 dark:text-green-400">
-                {{ bsp.assignedCount }}
+            <div
+              class="text-center px-2 py-1.5 rounded-lg transition-colors"
+              :class="(bsp.missingCount ?? 0) > 0
+                ? 'bg-amber-50 dark:bg-amber-900/20'
+                : 'bg-green-50 dark:bg-green-900/20'"
+            >
+              <div
+                class="text-lg font-bold"
+                :class="(bsp.missingCount ?? 0) > 0
+                  ? 'text-amber-600 dark:text-amber-400'
+                  : 'text-green-600 dark:text-green-400'"
+              >
+                {{ bsp.missingCount ?? 0 }}
               </div>
-              <div class="text-[10px] text-gray-500 dark:text-gray-400">Zugeordnet</div>
+              <div class="text-[10px] text-gray-500 dark:text-gray-400">
+                {{ (bsp.missingCount ?? 0) > 0 ? 'Ohne Beleg' : 'Vollständig' }}
+              </div>
             </div>
           </div>
         </div>

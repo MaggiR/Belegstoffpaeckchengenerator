@@ -21,6 +21,7 @@ const emit = defineEmits<{
   'drop-doc': [bookingId: string, docId: string]
   'drop-file': [bookingId: string, files: FileList]
   'toggle-no-doc': [bookingId: string]
+  'toggle-verified': [bookingId: string]
   'unassign': [bookingId: string]
 }>()
 
@@ -83,13 +84,13 @@ function onDocDragStart(e: DragEvent) {
 }
 
 const statusClass = computed(() => {
-  if (doc.value) return 'bg-green-500'
+  if (doc.value) return props.booking.verified ? 'bg-emerald-500' : 'bg-green-500'
   if (props.booking.noDocRequired) return 'bg-gray-300 dark:bg-gray-600'
-  return 'bg-amber-400'
+  return 'bg-amber-500'
 })
 
 const statusLabel = computed(() => {
-  if (doc.value) return 'Zugeordnet'
+  if (doc.value) return props.booking.verified ? 'Geprüft' : 'Zugeordnet'
   if (props.booking.noDocRequired) return 'Kein Beleg erforderlich'
   return 'Ohne Beleg'
 })
@@ -105,7 +106,9 @@ const statusLabel = computed(() => {
       : booking.noDocRequired
         ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 opacity-60'
         : doc
-          ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'
+          ? booking.verified
+            ? 'bg-white dark:bg-gray-800 border-emerald-400 dark:border-emerald-600'
+            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'
           : 'bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
@@ -144,6 +147,19 @@ const statusLabel = computed(() => {
         <span class="text-xs font-medium">{{ statusLabel }}</span>
       </div>
 
+      <!-- Verified-Checkbox (oben links) -->
+      <button
+        v-if="doc"
+        class="absolute top-2 left-2 w-7 h-7 rounded-lg flex items-center justify-center transition-all border-2 shadow-sm"
+        :class="booking.verified
+          ? 'bg-emerald-500 border-emerald-500 text-white'
+          : 'bg-white/90 dark:bg-gray-800/90 border-gray-300 dark:border-gray-600 text-transparent hover:border-emerald-400 hover:text-emerald-400'"
+        :title="booking.verified ? 'Zuordnung geprüft – zum Entprüfen klicken' : 'Als geprüft markieren'"
+        @click.stop="emit('toggle-verified', booking.id)"
+      >
+        <font-awesome-icon icon="check" class="w-3.5 h-3.5" />
+      </button>
+
       <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           v-if="doc"
@@ -174,7 +190,10 @@ const statusLabel = computed(() => {
 
       <div
         v-if="doc"
-        class="absolute bottom-2 left-2 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400"
+        class="absolute bottom-2 left-2 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors"
+        :class="booking.verified
+          ? 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300'
+          : 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400'"
       >
         {{ statusLabel }}
       </div>
@@ -202,31 +221,68 @@ const statusLabel = computed(() => {
   <!-- Listenansicht -->
   <div
     v-else
-    class="bg-white dark:bg-gray-800 border-2 rounded-lg px-4 py-2.5 flex items-center gap-3 hover:shadow-md transition-all group"
+    class="border-2 rounded-lg px-4 py-2.5 flex items-center gap-3 hover:shadow-md transition-all group relative overflow-hidden"
     :class="dragOver
-      ? 'border-primary-500 shadow-md shadow-primary-500/20'
-      : booking.noDocRequired && !doc
-        ? 'border-gray-200 dark:border-gray-700 opacity-60'
-        : 'border-gray-200 dark:border-gray-700'"
+      ? 'bg-white dark:bg-gray-800 border-primary-500 shadow-md shadow-primary-500/20'
+      : !doc && !booking.noDocRequired
+        ? 'bg-amber-50 dark:bg-amber-950/25 border-amber-400 dark:border-amber-600/70 shadow-sm shadow-amber-500/10'
+        : booking.noDocRequired && !doc
+          ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 opacity-60'
+          : doc && booking.verified
+            ? 'bg-white dark:bg-gray-800 border-emerald-400 dark:border-emerald-600'
+            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <div class="w-2 h-2 rounded-full flex-shrink-0" :class="statusClass" />
+    <!-- Linker Akzentbalken bei fehlendem Beleg -->
+    <div
+      v-if="!doc && !booking.noDocRequired"
+      class="absolute left-0 top-0 bottom-0 w-1 bg-amber-500 dark:bg-amber-400"
+    />
 
-    <span class="text-sm text-gray-500 dark:text-gray-400 w-24 flex-shrink-0">
-      {{ formattedDate }}
-    </span>
+    <!-- Statusspalte (fixe Breite – Checkbox oder Punkt) -->
+    <div class="w-6 flex items-center justify-center flex-shrink-0">
+      <button
+        v-if="doc"
+        class="w-6 h-6 rounded-md flex items-center justify-center transition-all border-2"
+        :class="booking.verified
+          ? 'bg-emerald-500 border-emerald-500 text-white'
+          : 'bg-white dark:bg-gray-900 border-gray-300 dark:border-gray-600 text-transparent hover:border-emerald-400 hover:text-emerald-400'"
+        :title="booking.verified ? 'Zuordnung geprüft – zum Entprüfen klicken' : 'Als geprüft markieren'"
+        @click.stop="emit('toggle-verified', booking.id)"
+      >
+        <font-awesome-icon icon="check" class="w-3 h-3" />
+      </button>
 
-    <span
-      class="text-sm font-semibold w-28 flex-shrink-0 text-right"
-      :class="isIncoming ? 'text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-white'"
-    >
-      {{ formattedAmount }}
-    </span>
+      <div
+        v-else
+        class="w-2 h-2 rounded-full"
+        :class="statusClass"
+      />
+    </div>
+
+    <div class="flex items-center gap-1.5 flex-shrink-0">
+      <span
+        class="text-sm w-20 whitespace-nowrap tabular-nums"
+        :class="!doc && !booking.noDocRequired ? 'text-amber-700 dark:text-amber-300 font-medium' : 'text-gray-500 dark:text-gray-400'"
+      >
+        {{ formattedDate }}
+      </span>
+
+      <span
+        class="text-sm font-semibold w-24 text-right tabular-nums"
+        :class="isIncoming ? 'text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-white'"
+      >
+        {{ formattedAmount }}
+      </span>
+    </div>
 
     <div class="flex-1 min-w-0">
-      <span class="text-sm text-gray-600 dark:text-gray-400 block line-clamp-2 leading-tight">
+      <span
+        class="text-sm block line-clamp-2 leading-tight"
+        :class="!doc && !booking.noDocRequired ? 'text-amber-900 dark:text-amber-200 font-medium' : 'text-gray-600 dark:text-gray-400'"
+      >
         {{ booking.description || '—' }}
       </span>
       <span v-if="booking.remarks" v-trunc-title class="text-[10px] text-gray-400 dark:text-gray-500 block truncate mt-0.5">
@@ -247,7 +303,10 @@ const statusLabel = computed(() => {
       <!-- Zugeordneter Beleg (wie Sidebar-Darstellung) -->
       <div
         v-else-if="doc"
-        class="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 cursor-grab active:cursor-grabbing group/doc"
+        class="flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-grab active:cursor-grabbing group/doc transition-colors"
+        :class="booking.verified
+          ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700'
+          : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'"
         draggable="true"
         @dragstart="onDocDragStart"
         @click.stop="emit('preview', booking.id)"
@@ -266,11 +325,15 @@ const statusLabel = computed(() => {
             />
           </div>
         </div>
-        <span class="text-xs text-green-700 dark:text-green-400 flex-1 min-w-0 line-clamp-2 break-all leading-tight">
+        <span
+          class="text-xs flex-1 min-w-0 line-clamp-2 break-all leading-tight"
+          :class="booking.verified ? 'text-emerald-700 dark:text-emerald-300' : 'text-green-700 dark:text-green-400'"
+        >
           {{ stripExtension(doc.name) }}
         </span>
         <button
-          class="w-5 h-5 flex-shrink-0 rounded text-green-400 hover:text-red-500 flex items-center justify-center opacity-0 group-hover/doc:opacity-100 transition-opacity"
+          class="w-5 h-5 flex-shrink-0 rounded hover:text-red-500 flex items-center justify-center opacity-0 group-hover/doc:opacity-100 transition-opacity"
+          :class="booking.verified ? 'text-emerald-400' : 'text-green-400'"
           title="Beleg entfernen"
           @click.stop="emit('unassign', booking.id)"
         >
@@ -299,13 +362,13 @@ const statusLabel = computed(() => {
         v-else
         class="flex items-center gap-2 px-2 py-1.5 rounded-lg border-2 border-dashed transition-colors"
         :class="dragOver
-          ? 'border-primary-400 bg-primary-50/50 dark:bg-primary-900/10'
-          : 'border-amber-200 dark:border-amber-800/40 hover:border-amber-300 dark:hover:border-amber-700'"
+          ? 'border-primary-400 bg-primary-50/70 dark:bg-primary-900/20'
+          : 'border-amber-400 dark:border-amber-600/70 bg-amber-100/60 dark:bg-amber-900/20 hover:border-amber-500 dark:hover:border-amber-500'"
       >
-        <font-awesome-icon icon="circle-exclamation" class="text-amber-400 dark:text-amber-500 w-3.5 h-3.5 flex-shrink-0" />
-        <span class="text-[11px] text-amber-500 dark:text-amber-400 font-medium flex-1">Ohne Beleg</span>
+        <font-awesome-icon icon="circle-exclamation" class="text-amber-600 dark:text-amber-400 w-4 h-4 flex-shrink-0" />
+        <span class="text-[11px] text-amber-700 dark:text-amber-300 font-semibold flex-1">Ohne Beleg</span>
         <button
-          class="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors opacity-0 group-hover:opacity-100"
+          class="p-1.5 rounded-md text-amber-600/70 dark:text-amber-400/70 hover:text-amber-700 hover:bg-amber-200/50 dark:hover:bg-amber-900/40 transition-colors opacity-0 group-hover:opacity-100"
           title="Kein Beleg erforderlich"
           @click.stop="emit('toggle-no-doc', booking.id)"
         >
