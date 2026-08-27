@@ -168,13 +168,13 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
 
 <template>
   <div
-    class="w-80 flex-shrink-0 sticky top-4 self-start"
+    class="w-80 flex-shrink-0 sticky top-4 self-start flex flex-col h-[calc(100dvh-2rem)] min-h-0"
     @dragover="onDragOver"
     @dragleave="dropActive = false"
     @drop="onDrop"
   >
     <!-- Kopfzeile -->
-    <div class="flex items-center gap-2 mb-2 h-5">
+    <div class="flex items-center gap-2 mb-2 h-5 flex-shrink-0">
       <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
         Belege
       </h3>
@@ -218,7 +218,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
     >
 
     <!-- Werkzeugleiste: Suche, Filter und Sortierung in einer Zeile -->
-    <div v-if="unassignedDocuments.length > 0" ref="toolbarRef" class="relative mb-2">
+    <div v-if="unassignedDocuments.length > 0" ref="toolbarRef" class="relative mb-2 flex-shrink-0">
       <div class="flex items-center gap-1">
         <div class="relative flex-1 min-w-0">
           <font-awesome-icon
@@ -380,7 +380,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
     <!-- Trefferanzeige bei aktiver Suche oder Filterung -->
     <div
       v-if="isNarrowed && unassignedDocuments.length > 0"
-      class="flex items-center justify-between mb-1.5 px-0.5"
+      class="flex items-center justify-between mb-1.5 px-0.5 flex-shrink-0"
     >
       <span class="text-[10px] text-gray-400 dark:text-gray-500">
         {{ filteredSortedUnassignedDocuments.length }} von {{ unassignedDocuments.length }}
@@ -396,7 +396,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
     <!-- Sammelanalyse, sobald ein Anbieter eingerichtet ist -->
     <button
       v-if="isConfigured && notAnalyzedCount > 0 && pendingExtractions === 0"
-      class="w-full mb-2 h-8 text-[11px] font-medium rounded-lg bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400 hover:bg-primary-100 dark:hover:bg-primary-900/50 transition-colors flex items-center justify-center gap-1.5"
+      class="w-full mb-2 h-8 flex-shrink-0 text-[11px] font-medium rounded-lg bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400 hover:bg-primary-100 dark:hover:bg-primary-900/50 transition-colors flex items-center justify-center gap-1.5"
       @click="emit('analyze-all')"
     >
       <font-awesome-icon icon="brain" class="w-3 h-3" />
@@ -404,7 +404,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
     </button>
 
     <!-- Fortschritt beim Hochladen -->
-    <div v-if="uploading" class="mb-2">
+    <div v-if="uploading" class="mb-2 flex-shrink-0">
       <div class="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400 mb-1">
         <span>{{ uploadDone }} / {{ uploadTotal }} verarbeitet</span>
         <span>{{ uploadPercent }}%</span>
@@ -420,7 +420,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
     <!-- Upload-Bereich wenn keine unzugeordneten Belege -->
     <div
       v-if="unassignedDocuments.length === 0 && !uploading"
-      class="border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all"
+      class="flex-1 min-h-0 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all flex flex-col items-center justify-center"
       :class="dropActive
         ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
         : 'border-gray-300 dark:border-gray-600 hover:border-primary-400 dark:hover:border-primary-500 hover:bg-gray-50 dark:hover:bg-gray-800/50'"
@@ -438,7 +438,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
     <!-- Belegliste -->
     <div
       v-else
-      class="space-y-1.5 max-h-[calc(100vh-200px)] overflow-auto rounded-lg"
+      class="flex-1 min-h-0 space-y-1.5 overflow-auto rounded-lg"
       :class="dropActive ? 'ring-2 ring-primary-400 ring-offset-2 dark:ring-offset-gray-950' : ''"
     >
       <div

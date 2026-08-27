@@ -154,7 +154,7 @@ function describeNetworkFailure(e: any, provider: 'Ollama' | 'OpenAI', target: s
   }
   if (e instanceof TypeError) {
     if (provider === 'Ollama') {
-      return `${target} war nicht erreichbar oder hat die Anfrage abgewiesen. Anders als der Verbindungstest löst der Analyse-Aufruf eine CORS-Vorabanfrage aus – dafür muss auf dem Ollama-Host OLLAMA_ORIGINS gesetzt sein, etwa OLLAMA_ORIGINS=*.`
+      return describeOllamaFetchFailure(target, 'post')
     }
     return `${target} war nicht erreichbar. Prüfe die Internetverbindung.`
   }

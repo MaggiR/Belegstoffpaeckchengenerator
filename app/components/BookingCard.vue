@@ -322,7 +322,7 @@ function onTileClick() {
     <div class="w-8 flex-shrink-0 flex items-center justify-center">
       <button
         v-if="hasDocs"
-        class="p-1.5 rounded-md text-gray-300 dark:text-gray-600 group-hover:text-red-500 dark:group-hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors opacity-0 group-hover:opacity-100"
+        class="p-1.5 rounded-md text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors opacity-0 group-hover:opacity-100"
         :title="docs.length > 1 ? 'Alle Zuordnungen dieser Buchung lösen' : 'Zuordnung lösen'"
         @click.stop="emit('unassign', booking.id)"
       >

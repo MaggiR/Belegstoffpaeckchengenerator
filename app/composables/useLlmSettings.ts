@@ -26,6 +26,32 @@ function normalizeBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
 }
 
+function isHttpsPage(): boolean {
+  return typeof location !== 'undefined' && location.protocol === 'https:'
+}
+
+function isHttpUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'http:'
+  } catch {
+    return url.trim().toLowerCase().startsWith('http://')
+  }
+}
+
+/**
+ * Browser-Netzwerkfehler (TypeError/NetworkError) unterscheiden Mixed Content
+ * von CORS. Der Browser gibt den echten Grund nicht preis.
+ */
+export function describeOllamaFetchFailure(target: string, phase: 'get' | 'post' = 'get'): string {
+  if (isHttpsPage() && isHttpUrl(target)) {
+    return `${target} ist per HTTP erreichbar, diese Seite läuft aber über HTTPS. Der Browser blockiert das als unsicheren Inhalt (Mixed Content). Ollama hinter einem HTTPS-Reverse-Proxy bereitstellen oder die App über HTTP öffnen.`
+  }
+  if (phase === 'post') {
+    return `Ollama blockiert Schreibanfragen aus dem Browser. Auf dem Ollama-Host OLLAMA_ORIGINS setzen, etwa OLLAMA_ORIGINS=*, und den Dienst neu starten.`
+  }
+  return `${target} war nicht erreichbar. Prüfe Host, Port, Firewall und ob Ollama lauscht (OLLAMA_HOST). Läuft diese Seite über HTTPS, muss auch Ollama über HTTPS erreichbar sein.`
+}
+
 export function useLlmSettings() {
   function load(): void {
     if (hydrated || typeof localStorage === 'undefined') return
@@ -105,7 +131,7 @@ export function useLlmSettings() {
         } catch {
           return {
             ok: false,
-            message: `Das Modell ist installiert, aber Ollama blockiert Schreibanfragen aus dem Browser. Setze auf dem Ollama-Host OLLAMA_ORIGINS, etwa OLLAMA_ORIGINS=*, und starte den Dienst neu.`,
+            message: describeOllamaFetchFailure(base, 'post'),
           }
         }
         if (!showRes.ok) {
@@ -138,9 +164,13 @@ export function useLlmSettings() {
       }
       return { ok: true, message: 'Verbindung zu OpenAI steht.' }
     } catch (e: any) {
+      if (candidate.provider === 'ollama') {
+        const base = normalizeBaseUrl(candidate.ollamaBaseUrl)
+        return { ok: false, message: describeOllamaFetchFailure(base, 'get') }
+      }
       return {
         ok: false,
-        message: `Verbindung fehlgeschlagen: ${e?.message || 'unbekannter Fehler'}. Bei Ollama muss OLLAMA_ORIGINS den Browser-Zugriff erlauben.`,
+        message: `Verbindung fehlgeschlagen: ${e?.message || 'unbekannter Fehler'}.`,
       }
     }
   }

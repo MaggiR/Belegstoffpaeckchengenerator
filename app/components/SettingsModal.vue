@@ -132,7 +132,7 @@ function resetDraft() {
             <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 flex items-start gap-2">
               <font-awesome-icon icon="circle-info" class="text-amber-500 w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
               <p class="text-[11px] text-amber-700 dark:text-amber-300">
-                Ollama muss Anfragen aus dem Browser erlauben. Dafür auf dem Ollama-Host
+                Läuft diese Seite über HTTPS, muss auch Ollama über HTTPS erreichbar sein – sonst blockiert der Browser die Anfrage als unsicheren Inhalt. Zusätzlich auf dem Ollama-Host
                 <code class="font-mono">OLLAMA_ORIGINS=*</code> setzen, sonst blockiert CORS die Analyse.
               </p>
             </div>
