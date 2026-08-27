@@ -4,3 +4,8 @@ services:
     ports:
       - "3000:80"
     restart: unless-stopped
+    # Ollama-Proxy: URL in .env setzen (OLLAMA_UPSTREAM=…), in der App dann /ollama eintragen.
+    environment:
+      OLLAMA_UPSTREAM: ${OLLAMA_UPSTREAM:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

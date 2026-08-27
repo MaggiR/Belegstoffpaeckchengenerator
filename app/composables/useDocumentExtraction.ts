@@ -186,7 +186,7 @@ function buildUserText(ocrText: string, fileName: string): string {
 }
 
 async function callOllama(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
-  const base = settings.ollamaBaseUrl.trim().replace(/\/+$/, '')
+  const base = resolveOllamaBaseUrl(settings.ollamaBaseUrl)
   const model = settings.ollamaModel.trim()
 
   let res: Response

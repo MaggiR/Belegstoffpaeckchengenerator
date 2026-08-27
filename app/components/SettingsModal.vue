@@ -112,10 +112,14 @@ function resetDraft() {
               <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Ollama-URL</label>
               <input
                 v-model="draft.ollamaBaseUrl"
-                type="url"
-                placeholder="http://localhost:11434"
+                type="text"
+                placeholder="http://localhost:11434 oder /ollama"
                 class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               >
+              <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                Lokal: <code class="font-mono">http://localhost:11434</code>.
+                Produktiv: <code class="font-mono">/ollama</code> (Server-Proxy), wenn <code class="font-mono">OLLAMA_UPSTREAM</code> gesetzt ist.
+              </p>
             </div>
             <div>
               <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Modell</label>
@@ -132,8 +136,11 @@ function resetDraft() {
             <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 flex items-start gap-2">
               <font-awesome-icon icon="circle-info" class="text-amber-500 w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
               <p class="text-[11px] text-amber-700 dark:text-amber-300">
-                Läuft diese Seite über HTTPS, muss auch Ollama über HTTPS erreichbar sein – sonst blockiert der Browser die Anfrage als unsicheren Inhalt. Zusätzlich auf dem Ollama-Host
-                <code class="font-mono">OLLAMA_ORIGINS=*</code> setzen, sonst blockiert CORS die Analyse.
+                Von einer öffentlichen Adresse aus kann der Browser keine LAN-IPs wie
+                <code class="font-mono">192.168.x.x</code> direkt ansprechen – nutze dann
+                <code class="font-mono">/ollama</code> mit Server-Proxy.
+                Lokal braucht Ollama <code class="font-mono">OLLAMA_ORIGINS=*</code>.
+                Über HTTPS muss Ollama ebenfalls über HTTPS erreichbar sein (Mixed Content).
               </p>
             </div>
           </div>

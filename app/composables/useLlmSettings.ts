@@ -22,8 +22,13 @@ export interface ConnectionTestResult {
 }
 
 /** Entfernt einen abschließenden Slash, damit Pfade eindeutig zusammengesetzt werden. */
-function normalizeBaseUrl(url: string): string {
+export function normalizeBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
+}
+
+/** Relative Pfade (/ollama) bleiben same-origin; absolute URLs unverändert. */
+export function resolveOllamaBaseUrl(base: string): string {
+  return normalizeBaseUrl(base)
 }
 
 function isHttpsPage(): boolean {
@@ -38,18 +43,49 @@ function isHttpUrl(url: string): boolean {
   }
 }
 
+function isPrivateNetworkHost(hostname: string): boolean {
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return true
+  if (/^192\.168\./.test(hostname)) return true
+  if (/^10\./.test(hostname)) return true
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true
+  return false
+}
+
+function ollamaUrlHostname(url: string): string | null {
+  if (url.startsWith('/')) return null
+  try {
+    return new URL(url).hostname
+  } catch {
+    return null
+  }
+}
+
 /**
- * Browser-Netzwerkfehler (TypeError/NetworkError) unterscheiden Mixed Content
- * von CORS. Der Browser gibt den echten Grund nicht preis.
+ * Browser-Netzwerkfehler (TypeError/NetworkError) einordnen. Der Browser gibt
+ * Mixed Content, Private Network Access und CORS oft nur als NetworkError preis.
  */
 export function describeOllamaFetchFailure(target: string, phase: 'get' | 'post' = 'get'): string {
-  if (isHttpsPage() && isHttpUrl(target)) {
-    return `${target} ist per HTTP erreichbar, diese Seite läuft aber über HTTPS. Der Browser blockiert das als unsicheren Inhalt (Mixed Content). Ollama hinter einem HTTPS-Reverse-Proxy bereitstellen oder die App über HTTP öffnen.`
+  const pageOrigin = typeof location !== 'undefined' ? location.origin : ''
+  const pageHost = typeof location !== 'undefined' ? location.hostname : ''
+
+  if (target.startsWith('/')) {
+    return `${target} antwortet nicht korrekt. Ist OLLAMA_UPSTREAM gesetzt und der Container neu gestartet? Ohne Proxy liefert nginx die App-Seite statt Ollama-JSON.`
   }
+
+  if (isHttpsPage() && isHttpUrl(target)) {
+    return `${target} ist per HTTP erreichbar, diese Seite läuft aber über HTTPS. Der Browser blockiert das als unsicheren Inhalt (Mixed Content). Ollama hinter HTTPS bereitstellen oder in den Einstellungen die Proxy-URL /ollama nutzen.`
+  }
+
+  const ollamaHost = ollamaUrlHostname(target)
+  if (ollamaHost && isPrivateNetworkHost(ollamaHost) && pageHost && !isPrivateNetworkHost(pageHost)) {
+    return `Der Browser blockiert direkte Aufrufe von „${pageOrigin}“ zu privaten Adressen wie ${target} (Private Network Access). Statt der LAN-IP /ollama eintragen und auf dem Server OLLAMA_UPSTREAM setzen – oder OpenAI nutzen.`
+  }
+
   if (phase === 'post') {
     return `Ollama blockiert Schreibanfragen aus dem Browser. Auf dem Ollama-Host OLLAMA_ORIGINS setzen, etwa OLLAMA_ORIGINS=*, und den Dienst neu starten.`
   }
-  return `${target} war nicht erreichbar. Prüfe Host, Port, Firewall und ob Ollama lauscht (OLLAMA_HOST). Läuft diese Seite über HTTPS, muss auch Ollama über HTTPS erreichbar sein.`
+
+  return `${target} war nicht erreichbar. Prüfe Host, Port, Firewall und ob Ollama lauscht (OLLAMA_HOST=0.0.0.0:11434).`
 }
 
 export function useLlmSettings() {
@@ -77,7 +113,7 @@ export function useLlmSettings() {
 
   const isConfigured = computed(() => {
     const s = settings.value
-    if (s.provider === 'ollama') return normalizeBaseUrl(s.ollamaBaseUrl).length > 0 && s.ollamaModel.trim().length > 0
+    if (s.provider === 'ollama') return resolveOllamaBaseUrl(s.ollamaBaseUrl).length > 0 && s.ollamaModel.trim().length > 0
     if (s.provider === 'openai') return s.openaiApiKey.trim().length > 0 && s.openaiModel.trim().length > 0
     return false
   })
@@ -96,12 +132,27 @@ export function useLlmSettings() {
 
     try {
       if (candidate.provider === 'ollama') {
-        const base = normalizeBaseUrl(candidate.ollamaBaseUrl)
+        const base = resolveOllamaBaseUrl(candidate.ollamaBaseUrl)
         if (!base) return { ok: false, message: 'Bitte eine Ollama-URL angeben.' }
 
         const res = await fetch(`${base}/api/tags`)
         if (!res.ok) {
+          if (base.startsWith('/') && (res.status === 502 || res.status === 504)) {
+            return {
+              ok: false,
+              message: `Ollama-Proxy unter ${base} erreicht kein Ollama (${res.status}). Prüfe: (1) Ollama läuft auf dem in .env gesetzten OLLAMA_UPSTREAM, (2) dort OLLAMA_HOST=0.0.0.0:11434, (3) nach .env-Änderung „docker compose up -d“ ausführen.`,
+            }
+          }
           return { ok: false, message: `Ollama antwortete mit HTTP ${res.status}.` }
+        }
+        const contentType = res.headers.get('content-type') ?? ''
+        if (!contentType.includes('json')) {
+          return {
+            ok: false,
+            message: base.startsWith('/')
+              ? `Unter ${base} kam keine Ollama-Antwort (kein JSON). OLLAMA_UPSTREAM setzen, Container neu starten und URL „/ollama“ verwenden.`
+              : `Unerwartete Antwort von ${base} (kein JSON).`,
+          }
         }
         const data = await res.json()
         const models: string[] = (data?.models ?? []).map((m: any) => String(m?.name ?? ''))
@@ -165,7 +216,7 @@ export function useLlmSettings() {
       return { ok: true, message: 'Verbindung zu OpenAI steht.' }
     } catch (e: any) {
       if (candidate.provider === 'ollama') {
-        const base = normalizeBaseUrl(candidate.ollamaBaseUrl)
+        const base = resolveOllamaBaseUrl(candidate.ollamaBaseUrl)
         return { ok: false, message: describeOllamaFetchFailure(base, 'get') }
       }
       return {
