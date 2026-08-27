@@ -85,12 +85,11 @@ function apply() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4"
-      @click.self="emit('close')"
-    >
-      <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col">
+  <div
+    class="fixed inset-0 bg-gray-900/40 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4"
+    @click.self="emit('close')"
+  >
+    <div class="modal-panel bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col">
         <div class="p-6 border-b border-gray-200 dark:border-gray-700">
           <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
             Spalten zuordnen
@@ -298,7 +297,6 @@ function apply() {
             </span>
           </button>
         </div>
-      </div>
     </div>
-  </Teleport>
+  </div>
 </template>

@@ -1,17 +1,16 @@
 <script setup lang="ts">
 import type { DocumentFile } from '~/types'
 import { PdfPasswordRequiredError } from '~/composables/usePdfUtils'
+import { fallbackTitleFromName } from '~/composables/useDocumentExtraction'
 
 const {
   viewMode,
   filteredAndSortedBookings,
-  unassignedDocuments,
   documents,
   bookings,
   assignDocument,
   unassignDocument,
-  unassignAllDocuments,
-  getDocumentForBooking,
+  getDocumentsForBooking,
   getDocument,
   addDocuments,
   removeDocument,
@@ -25,20 +24,29 @@ const {
   columnMapping,
   stats,
   sort,
+  beginAssignmentBatch,
+  endAssignmentBatch,
+  undoAssignment,
+  redoAssignment,
+  canUndoAssignment,
+  canRedoAssignment,
+  clearAssignmentHistory,
 } = useAppState()
 
-const { parseFile, detectColumns, createBookings } = useTableParser()
+const { createBookings } = useTableParser()
 const { generateThumbnail, extractTextFromPdf, isPdfEncrypted } = usePdfUtils()
 const { recognizeText } = useOcr()
-const { autoMatch } = useMatching()
+const { queueExtraction, queueMissing } = useDocumentExtraction()
+const { uploadRequest, showUnassignAllConfirm, confirmUnassignAll } = useDocumentActions()
 
 const passwordDialog = ref<{ doc: DocumentFile; wrongPassword: boolean } | null>(null)
 
-const docInputRef = ref<HTMLInputElement>()
-const docDropActive = ref(false)
-const sidebarDropHighlight = ref(false)
+const sidebarRef = ref<{ openFilePicker: () => void } | null>(null)
 const previewDocDirect = ref<DocumentFile | null>(null)
-const showUnassignAllConfirm = ref(false)
+const editDoc = ref<DocumentFile | null>(null)
+
+// Der Dateidialog gehört der Seitenleiste; die Titelzeile stößt ihn über den Zähler an.
+watch(uploadRequest, () => sidebarRef.value?.openFilePicker())
 
 const sidebarUploading = ref(false)
 const sidebarUploadDone = ref(0)
@@ -96,15 +104,16 @@ const bookingsWithSeparators = computed<ListItem[]>(() => {
   return items
 })
 
-function stripExtension(name: string): string {
-  return name.replace(/\.[^.]+$/, '')
-}
-
 function handleDropDoc(bookingId: string, docId: string) {
   const booking = bookings.value.find(b => b.id === bookingId)
-  if (booking) {
+  if (!booking) return
+
+  beginAssignmentBatch()
+  try {
     booking.noDocRequired = false
     assignDocument(bookingId, docId)
+  } finally {
+    endAssignmentBatch()
   }
 }
 
@@ -119,22 +128,25 @@ async function handleDropFile(bookingId: string, files: FileList) {
 
   loadingBookingId.value = bookingId
 
-  for (let i = 0; i < fileArray.length; i++) {
-    const file = fileArray[i]
-    const doc = await processFile(file, i)
-
-    addDocuments([doc])
-    if (i === 0) {
+  beginAssignmentBatch()
+  try {
+    // Alle abgelegten Dateien landen bei dieser Buchung – mehrere Belege sind erlaubt.
+    for (let i = 0; i < fileArray.length; i++) {
+      const doc = await processFile(fileArray[i], i)
+      addDocuments([doc])
       booking.noDocRequired = false
       assignDocument(bookingId, doc.id)
+      queueExtraction(doc.id)
     }
+  } finally {
+    endAssignmentBatch()
   }
 
   loadingBookingId.value = null
 }
 
-function handleInlineUnassign(bookingId: string) {
-  unassignDocument(bookingId)
+function handleInlineUnassign(bookingId: string, docId?: string) {
+  unassignDocument(bookingId, docId)
 }
 
 function handleToggleNoDoc(bookingId: string) {
@@ -150,8 +162,8 @@ function handleUnlockDoc(docId: string) {
   if (doc) openPasswordDialog(doc)
 }
 
-function handleBookingPreview(bookingId: string) {
-  const doc = getDocumentForBooking(bookingId)
+function handleBookingPreview(bookingId: string, docId?: string) {
+  const doc = docId ? getDocument(docId) : getDocumentsForBooking(bookingId)[0]
   if (doc) previewDocDirect.value = doc
 }
 
@@ -159,20 +171,14 @@ function openDocPreview(doc: DocumentFile) {
   previewDocDirect.value = doc
 }
 
-function runAutoMatch() {
-  const assignedDocIds = new Set(bookings.value.map(b => b.documentId).filter(Boolean))
-  const bookingsWithoutDoc = bookings.value.filter(b => !b.documentId)
-  const unassignedDocs = documents.value.filter(d => !assignedDocIds.has(d.id))
-  const assignments = autoMatch(bookingsWithoutDoc, unassignedDocs)
-  for (const [bookingId, docId] of assignments) {
-    const b = bookings.value.find(b => b.id === bookingId)
-    if (b) b.documentId = docId
-  }
+/** Löst einen Beleg aus seiner Buchung, wenn er zurück in die Seitenleiste gezogen wird. */
+function handleSidebarUnassign(docId: string) {
+  const booking = bookings.value.find(b => b.documentIds.includes(docId))
+  if (booking) unassignDocument(booking.id, docId)
 }
 
-function confirmUnassignAll() {
-  unassignAllDocuments()
-  showUnassignAllConfirm.value = false
+function handleDocFieldsSave(docId: string, patch: Partial<DocumentFile>) {
+  updateDocument(docId, patch)
 }
 
 function openColumnMapper() {
@@ -202,38 +208,9 @@ function applyMapping(importFilters?: { dateFrom: string | null; dateTo: string 
 
   if (created.length > 0) {
     bookings.value = created
+    clearAssignmentHistory()
   }
   showColumnMapper.value = false
-}
-
-function onSidebarDocDragStart(e: DragEvent, docId: string) {
-  e.dataTransfer!.setData('application/x-doc-id', docId)
-  e.dataTransfer!.effectAllowed = 'move'
-}
-
-function onSidebarDragOver(e: DragEvent) {
-  const hasDocId = e.dataTransfer?.types?.includes('application/x-doc-id')
-  const hasFiles = e.dataTransfer?.types?.includes('Files')
-  if (hasDocId || hasFiles) {
-    e.preventDefault()
-    sidebarDropHighlight.value = true
-  }
-}
-
-function onSidebarDrop(e: DragEvent) {
-  sidebarDropHighlight.value = false
-  const docId = e.dataTransfer?.getData('application/x-doc-id')
-  if (docId) {
-    e.preventDefault()
-    const booking = bookings.value.find(b => b.documentId === docId)
-    if (booking) booking.documentId = null
-    return
-  }
-  const files = e.dataTransfer?.files
-  if (files && files.length > 0) {
-    e.preventDefault()
-    handleAdditionalUpload(files)
-  }
 }
 
 async function processFile(file: File, idx: number): Promise<DocumentFile> {
@@ -246,6 +223,12 @@ async function processFile(file: File, idx: number): Promise<DocumentFile> {
     extractedText: '',
     thumbnailDataUrl: null,
     ocrProcessed: false,
+    // Bis das Sprachmodell antwortet, dient der Dateiname als Titel.
+    title: fallbackTitleFromName(file.name),
+    correspondent: null,
+    documentDate: null,
+    totalAmount: null,
+    extractionStatus: 'pending',
   }
 
   if (isPdf) {
@@ -325,6 +308,9 @@ async function submitPassword(password: string) {
     ocrProcessed: attempt.ocrProcessed,
   })
   passwordDialog.value = null
+
+  // Vor dem Entsperren war keine Analyse möglich.
+  if (doc.extractionStatus !== 'done') queueExtraction(doc.id)
 }
 
 async function handleAdditionalUpload(files: FileList) {
@@ -340,6 +326,7 @@ async function handleAdditionalUpload(files: FileList) {
   for (let i = 0; i < fileArray.length; i++) {
     const doc = await processFile(fileArray[i], i)
     addDocuments([doc])
+    queueExtraction(doc.id)
     sidebarUploadDone.value = i + 1
   }
 
@@ -401,6 +388,36 @@ function tickAutoScroll() {
   autoscrollRAF = requestAnimationFrame(tickAutoScroll)
 }
 
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+function onAssignmentHistoryKeydown(e: KeyboardEvent) {
+  if (!(e.ctrlKey || e.metaKey) || isTypingTarget(e.target)) return
+
+  if (e.key === 'z' || e.key === 'Z') {
+    if (e.shiftKey) {
+      if (!canRedoAssignment.value) return
+      e.preventDefault()
+      redoAssignment()
+      return
+    }
+    if (!canUndoAssignment.value) return
+    e.preventDefault()
+    undoAssignment()
+    return
+  }
+
+  if (e.key === 'y' || e.key === 'Y') {
+    if (!canRedoAssignment.value) return
+    e.preventDefault()
+    redoAssignment()
+  }
+}
+
 onMounted(() => {
   const filterEl = filterBarRef.value?.$el as HTMLElement | undefined
   if (filterEl) {
@@ -416,6 +433,7 @@ onMounted(() => {
   window.addEventListener('dragend', stopDrag)
   window.addEventListener('drop', stopDrag)
   window.addEventListener('mouseup', stopDrag)
+  window.addEventListener('keydown', onAssignmentHistoryKeydown)
 })
 
 onBeforeUnmount(() => {
@@ -424,6 +442,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('dragend', stopDrag)
   window.removeEventListener('drop', stopDrag)
   window.removeEventListener('mouseup', stopDrag)
+  window.removeEventListener('keydown', onAssignmentHistoryKeydown)
   stopDrag()
 })
 </script>
@@ -516,198 +535,85 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Seitenleiste: Belege -->
-      <div
-        class="w-80 flex-shrink-0 sticky top-4 self-start"
-        @dragover="onSidebarDragOver"
-        @dragleave="sidebarDropHighlight = false"
-        @drop="onSidebarDrop"
-      >
-        <div class="mb-2">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                Belege
-              </h3>
-              <span
-                v-if="unassignedDocuments.length > 0"
-                class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
-              >
-                {{ unassignedDocuments.length }}
-              </span>
-            </div>
-            <button
-              class="px-2.5 py-1 text-[11px] font-medium rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1"
-              @click="docInputRef?.click()"
-            >
-              <font-awesome-icon icon="plus" class="w-3 h-3" />
-              Nachladen
-            </button>
-          </div>
-          <div
-            v-if="unassignedDocuments.length > 0 || stats.withDoc > 0"
-            class="flex items-center gap-1.5 mt-1.5"
-          >
-            <button
-              v-if="unassignedDocuments.length > 0"
-              class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400 hover:bg-primary-100 dark:hover:bg-primary-900/50 transition-colors flex items-center gap-1"
-              @click="runAutoMatch"
-            >
-              <font-awesome-icon icon="wand-magic-sparkles" class="w-3 h-3" />
-              Auto-Zuordnung
-            </button>
-            <button
-              v-if="stats.withDoc > 0"
-              class="px-2.5 py-1 text-[11px] font-medium rounded-lg text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors flex items-center gap-1"
-              title="Alle Zuordnungen aufheben"
-              @click="showUnassignAllConfirm = true"
-            >
-              <font-awesome-icon icon="link-slash" class="w-3 h-3" />
-              Alle lösen
-            </button>
-          </div>
-        </div>
-
-        <input
-          ref="docInputRef"
-          type="file"
-          accept=".pdf,.jpg,.jpeg,.png"
-          multiple
-          class="hidden"
-          @change="(e: Event) => handleAdditionalUpload((e.target as HTMLInputElement).files!)"
-        >
-
-        <!-- Sidebar Upload Progress -->
-        <div v-if="sidebarUploading" class="mb-2">
-          <div class="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400 mb-1">
-            <span>{{ sidebarUploadDone }} / {{ sidebarUploadTotal }} verarbeitet</span>
-            <span>{{ Math.round((sidebarUploadDone / sidebarUploadTotal) * 100) }}%</span>
-          </div>
-          <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
-            <div
-              class="h-full rounded-full bg-gradient-to-r from-primary-400 to-primary-600 transition-all duration-500 ease-out animate-pulse"
-              :style="{ width: `${(sidebarUploadDone / sidebarUploadTotal) * 100}%` }"
-            />
-          </div>
-        </div>
-
-        <!-- Upload-Bereich wenn keine unzugeordneten Belege -->
-        <div
-          v-if="unassignedDocuments.length === 0 && !sidebarUploading"
-          class="border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all"
-          :class="docDropActive || sidebarDropHighlight
-            ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-            : 'border-gray-300 dark:border-gray-600 hover:border-primary-400 dark:hover:border-primary-500 hover:bg-gray-50 dark:hover:bg-gray-800/50'"
-          @dragover.prevent="docDropActive = true"
-          @dragleave="docDropActive = false"
-          @drop.prevent.stop="docDropActive = false; sidebarDropHighlight = false; handleAdditionalUpload($event.dataTransfer?.files!)"
-          @click="docInputRef?.click()"
-        >
-          <font-awesome-icon icon="file-pdf" class="text-2xl text-gray-400 dark:text-gray-500 mb-2" />
-          <p class="text-xs text-gray-600 dark:text-gray-400 font-medium">
-            Belegdateien hochladen
-          </p>
-          <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
-            PDF, JPEG, PNG hierher ziehen oder klicken
-          </p>
-        </div>
-
-        <!-- Belegliste -->
-        <div
-          v-if="unassignedDocuments.length > 0 || sidebarUploading"
-          class="space-y-1 max-h-[calc(100vh-140px)] overflow-auto pr-1 rounded-lg transition-colors"
-          :class="sidebarDropHighlight ? 'ring-2 ring-primary-400 ring-offset-2 dark:ring-offset-gray-950' : ''"
-        >
-          <div
-            v-for="doc in unassignedDocuments"
-            :key="doc.id"
-            class="bg-white dark:bg-gray-800 border rounded-lg px-2.5 py-2 flex items-center gap-2.5 group/doc transition-colors"
-            :class="doc.locked
-              ? 'border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-900/10 cursor-pointer hover:border-amber-400 dark:hover:border-amber-600'
-              : 'border-gray-200 dark:border-gray-700 cursor-grab active:cursor-grabbing hover:border-primary-300 dark:hover:border-primary-600'"
-            :draggable="!doc.locked"
-            :title="doc.locked ? 'Passwortgeschützt – zum Entsperren klicken' : undefined"
-            @dragstart="doc.locked ? $event.preventDefault() : onSidebarDocDragStart($event, doc.id)"
-            @click.stop="doc.locked ? openPasswordDialog(doc) : openDocPreview(doc)"
-          >
-            <div
-              class="w-8 h-10 flex-shrink-0 rounded overflow-hidden flex items-center justify-center"
-              :class="doc.locked
-                ? 'bg-amber-100 dark:bg-amber-900/30'
-                : 'bg-gray-50 dark:bg-gray-900'"
-            >
-              <font-awesome-icon
-                v-if="doc.locked"
-                icon="lock"
-                class="text-amber-500 dark:text-amber-400 text-sm"
-              />
-              <img
-                v-else-if="doc.thumbnailDataUrl"
-                :src="doc.thumbnailDataUrl"
-                :alt="doc.name"
-                class="w-full h-full object-cover pointer-events-none"
-              >
-              <font-awesome-icon
-                v-else
-                :icon="doc.type === 'pdf' ? 'file-pdf' : 'file-image'"
-                class="text-gray-300 dark:text-gray-600 text-[10px]"
-              />
-            </div>
-            <span
-              class="text-xs flex-1 min-w-0 line-clamp-2 break-all leading-tight"
-              :class="doc.locked
-                ? 'text-amber-700 dark:text-amber-300 font-medium'
-                : 'text-gray-700 dark:text-gray-300'"
-            >
-              {{ stripExtension(doc.name) }}
-            </span>
-            <button
-              class="w-5 h-5 flex-shrink-0 rounded text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 flex items-center justify-center opacity-0 group-hover/doc:opacity-100 transition-opacity"
-              title="Beleg löschen"
-              @click.stop="removeDocument(doc.id)"
-            >
-              <font-awesome-icon icon="trash" class="w-2.5 h-2.5" />
-            </button>
-          </div>
-        </div>
-      </div>
+      <DocumentSidebar
+        ref="sidebarRef"
+        :uploading="sidebarUploading"
+        :upload-done="sidebarUploadDone"
+        :upload-total="sidebarUploadTotal"
+        @preview="openDocPreview"
+        @unlock="openPasswordDialog"
+        @upload="handleAdditionalUpload"
+        @edit="editDoc = $event"
+        @reanalyze="queueExtraction"
+        @delete="removeDocument"
+        @unassign-doc="handleSidebarUnassign"
+        @analyze-all="queueMissing"
+      />
     </div>
 
     <!-- ColumnMapper Modal -->
-    <ColumnMapper
-      v-if="showColumnMapper"
-      :headers="tableHeaders"
-      :preview-rows="tablePreviewRows.slice(0, 5)"
-      :all-rows="allTableRows"
-      :mapping="columnMapping"
-      @update:mapping="columnMapping = $event"
-      @apply="applyMapping"
-      @close="showColumnMapper = false"
-    />
+    <Teleport to="body">
+      <Transition name="modal">
+        <ColumnMapper
+          v-if="showColumnMapper"
+          :headers="tableHeaders"
+          :preview-rows="tablePreviewRows.slice(0, 5)"
+          :all-rows="allTableRows"
+          :mapping="columnMapping"
+          @update:mapping="columnMapping = $event"
+          @apply="applyMapping"
+          @close="showColumnMapper = false"
+        />
+      </Transition>
+    </Teleport>
 
     <!-- Dokumentenvorschau -->
-    <DocumentPreview
-      v-if="previewDocDirect"
-      :document="previewDocDirect"
-      @close="previewDocDirect = null"
-    />
+    <Teleport to="body">
+      <Transition name="preview">
+        <DocumentPreview
+          v-if="previewDocDirect"
+          :document="previewDocDirect"
+          @close="previewDocDirect = null"
+          @edit="editDoc = previewDocDirect"
+        />
+      </Transition>
+    </Teleport>
+
+    <!-- Eckdaten eines Belegs bearbeiten -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <DocumentFieldsDialog
+          v-if="editDoc"
+          :key="editDoc.id"
+          :document="editDoc"
+          @save="handleDocFieldsSave"
+          @close="editDoc = null"
+        />
+      </Transition>
+    </Teleport>
 
     <!-- Passwort-Dialog für verschlüsselte PDFs -->
-    <PdfPasswordDialog
-      v-if="passwordDialog"
-      :document-name="passwordDialog.doc.name"
-      :wrong-password="passwordDialog.wrongPassword"
-      @submit="submitPassword"
-      @close="passwordDialog = null"
-    />
+    <Teleport to="body">
+      <Transition name="modal">
+        <PdfPasswordDialog
+          v-if="passwordDialog"
+          :document-name="passwordDialog.doc.name"
+          :wrong-password="passwordDialog.wrongPassword"
+          @submit="submitPassword"
+          @close="passwordDialog = null"
+        />
+      </Transition>
+    </Teleport>
 
     <!-- Bestätigungsdialog: Alle Zuordnungen lösen -->
     <Teleport to="body">
-      <div
-        v-if="showUnassignAllConfirm"
-        class="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]"
-        @click.self="showUnassignAllConfirm = false"
-      >
-        <div class="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-2xl max-w-sm mx-4">
+      <Transition name="modal">
+        <div
+          v-if="showUnassignAllConfirm"
+          class="fixed inset-0 bg-gray-900/40 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]"
+          @click.self="showUnassignAllConfirm = false"
+        >
+          <div class="modal-panel bg-white dark:bg-gray-800 rounded-xl p-6 shadow-2xl max-w-sm mx-4">
           <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">
             Alle Zuordnungen aufheben?
           </h3>
@@ -729,8 +635,9 @@ onBeforeUnmount(() => {
               Alle lösen
             </button>
           </div>
+          </div>
         </div>
-      </div>
+      </Transition>
     </Teleport>
   </div>
 </template>

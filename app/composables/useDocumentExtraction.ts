@@ -1,0 +1,430 @@
+import type { DocumentExtraction, DocumentFile, LlmSettings } from '~/types'
+
+/** Vision-Modelle brauchen auf CPU-Hardware leicht mehrere Minuten pro Beleg. */
+const REQUEST_TIMEOUT_MS = 240_000
+const MAX_OCR_CHARS = 6000
+const MAX_PAGE_IMAGES = 2
+const PAGE_RENDER_SCALE = 1.5
+
+/**
+ * Alle Felder sind Strings statt Union-Typen wie ["string", "null"]: die
+ * Schema-Umsetzung von Ollama unterstützt Typ-Unions nicht zuverlässig, und
+ * ein leerer String lässt sich beim Normalisieren genauso als "unbekannt"
+ * behandeln.
+ */
+const SCHEMA_PROPERTIES = {
+  title: { type: 'string' },
+  correspondent: { type: 'string' },
+  documentDate: { type: 'string' },
+  totalAmount: { type: 'string' },
+}
+
+const SCHEMA_REQUIRED = ['title', 'correspondent', 'documentDate', 'totalAmount']
+
+/** Ollama wandelt das Schema in eine Grammatik um und verträgt dabei kein `additionalProperties`. */
+const OLLAMA_SCHEMA = {
+  type: 'object',
+  properties: SCHEMA_PROPERTIES,
+  required: SCHEMA_REQUIRED,
+}
+
+/** Der strikte Modus von OpenAI verlangt umgekehrt genau dieses Feld. */
+const OPENAI_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: SCHEMA_PROPERTIES,
+  required: SCHEMA_REQUIRED,
+}
+
+const PROMPT = `Du analysierst einen Buchungsbeleg (Rechnung, Quittung, Antrag, Vertrag o. ä.) für die Buchhaltung eines politischen Kreisverbands.
+
+Extrahiere genau diese vier Felder:
+
+1. "title": Ein kurzer, sprechender Titel für den INHALT des Belegs, 1 bis 4 Wörter, ohne Firmennamen und ohne Datum. Beispiele: "Wahlkampfflyer", "Rückerstattungsantrag", "Cloud-Hosting", "Raummiete", "Portokosten". Dieses Feld ist PFLICHT und darf niemals leer sein. Wenn der Inhalt unklar ist, wähle den plausibelsten allgemeinen Begriff.
+2. "correspondent": Der Aussteller des Belegs bzw. der Geschäftspartner (Firma oder Person). Nur setzen, wenn eindeutig erkennbar, sonst leerer String.
+3. "documentDate": Das Datum des Belegs (Rechnungsdatum, Belegdatum, Quittungsdatum) im Format YYYY-MM-DD. Nicht das Fälligkeits-, Liefer- oder Zahlungsdatum. Nur setzen, wenn eindeutig erkennbar, sonst leerer String.
+4. "totalAmount": Der Gesamtbetrag bzw. Endbetrag des Belegs als positive Zahl mit Punkt als Dezimaltrennzeichen, zum Beispiel "1234.56". Nur setzen, wenn eindeutig EIN Gesamtbetrag erkennbar ist. Bei mehreren möglichen Gesamtbeträgen, unklaren Teilbeträgen oder gar keinem Betrag: leerer String.
+
+Grundregel: Lieber ein leeres Feld als ein geratener Wert. Nur der Titel muss immer gesetzt werden.
+
+Antworte ausschließlich mit einem JSON-Objekt mit genau diesen vier Schlüsseln.`
+
+const queued = ref<string[]>([])
+const activeDocId = ref<string | null>(null)
+const batchTotal = ref(0)
+const batchCompleted = ref(0)
+let pumping = false
+
+export function fallbackTitleFromName(name: string): string {
+  const withoutExtension = name.replace(/\.[^.]+$/, '')
+  return withoutExtension.trim() || name || 'Unbenannter Beleg'
+}
+
+/** Entfernt Markdown-Codefences, die manche Modelle trotz Schema-Vorgabe liefern. */
+function stripCodeFences(text: string): string {
+  return text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim()
+}
+
+function parseAmount(value: unknown): number | null {
+  let num: number | null = null
+
+  if (typeof value === 'number') {
+    num = value
+  } else if (typeof value === 'string') {
+    const cleaned = value.replace(/[^\d.,-]/g, '').trim()
+    if (!cleaned) return null
+    // Deutsches Format (1.234,56) vom englischen (1,234.56) unterscheiden
+    const normalized = cleaned.includes(',') && cleaned.lastIndexOf(',') > cleaned.lastIndexOf('.')
+      ? cleaned.replace(/\./g, '').replace(',', '.')
+      : cleaned.replace(/,/g, '')
+    const parsed = Number.parseFloat(normalized)
+    num = Number.isFinite(parsed) ? parsed : null
+  }
+
+  if (num === null || !Number.isFinite(num)) return null
+  const abs = Math.abs(num)
+  if (abs <= 0 || abs >= 10_000_000) return null
+  return Math.round(abs * 100) / 100
+}
+
+function parseDocumentDate(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const raw = value.trim()
+  if (!raw) return null
+
+  let year: number
+  let month: number
+  let day: number
+
+  const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+  const german = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/)
+
+  if (iso) {
+    year = Number(iso[1]); month = Number(iso[2]); day = Number(iso[3])
+  } else if (german) {
+    day = Number(german[1]); month = Number(german[2]); year = Number(german[3])
+  } else {
+    return null
+  }
+
+  const date = new Date(year, month - 1, day)
+  const roundTrips = date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+  const plausible = year >= 1990 && year <= new Date().getFullYear() + 1
+  if (!roundTrips || !plausible) return null
+
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${year}-${pad(month)}-${pad(day)}`
+}
+
+function normalizeText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim().replace(/\s+/g, ' ')
+  if (!trimmed || trimmed.toLowerCase() === 'null' || trimmed === '-') return null
+  return trimmed.slice(0, maxLength)
+}
+
+export function normalizeExtraction(raw: any, fallbackTitle: string): DocumentExtraction {
+  return {
+    title: normalizeText(raw?.title, 80) ?? fallbackTitle,
+    correspondent: normalizeText(raw?.correspondent, 120),
+    documentDate: parseDocumentDate(raw?.documentDate),
+    totalAmount: parseAmount(raw?.totalAmount),
+  }
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Übersetzt einen fehlgeschlagenen fetch in eine Meldung, mit der man etwas
+ * anfangen kann. `TypeError` ist der einzige Hinweis, den der Browser bei
+ * einer blockierten CORS-Anfrage herausgibt – der Grund selbst bleibt
+ * absichtlich verborgen.
+ */
+function describeNetworkFailure(e: any, provider: 'Ollama' | 'OpenAI', target: string): string {
+  if (e?.name === 'AbortError') {
+    return `${provider} hat nach ${Math.round(REQUEST_TIMEOUT_MS / 1000)} Sekunden nicht geantwortet. Bei großen Modellen auf CPU kann eine Seite länger dauern.`
+  }
+  if (e instanceof TypeError) {
+    if (provider === 'Ollama') {
+      return `${target} war nicht erreichbar oder hat die Anfrage abgewiesen. Anders als der Verbindungstest löst der Analyse-Aufruf eine CORS-Vorabanfrage aus – dafür muss auf dem Ollama-Host OLLAMA_ORIGINS gesetzt sein, etwa OLLAMA_ORIGINS=*.`
+    }
+    return `${target} war nicht erreichbar. Prüfe die Internetverbindung.`
+  }
+  return `${provider}-Aufruf fehlgeschlagen: ${e?.message || 'unbekannter Fehler'}`
+}
+
+/** Holt die Fehlerbeschreibung aus dem Antwortkörper, soweit vorhanden. */
+async function readErrorDetail(res: Response): Promise<string> {
+  try {
+    const text = await res.text()
+    if (!text) return ''
+    try {
+      const parsed = JSON.parse(text)
+      const message = parsed?.error?.message ?? parsed?.error ?? parsed?.message
+      if (typeof message === 'string' && message.trim()) return ` – ${message.trim().slice(0, 300)}`
+    } catch {}
+    return ` – ${text.trim().slice(0, 300)}`
+  } catch {
+    return ''
+  }
+}
+
+function buildUserText(ocrText: string, fileName: string): string {
+  const trimmedOcr = ocrText.trim().slice(0, MAX_OCR_CHARS)
+  const ocrBlock = trimmedOcr
+    ? `Per Texterkennung ausgelesener Inhalt:\n"""\n${trimmedOcr}\n"""`
+    : 'Es liegt kein verwertbarer Text vor, beurteile ausschließlich die Seitenbilder.'
+  return `${PROMPT}\n\nDateiname: ${fileName}\n\n${ocrBlock}`
+}
+
+async function callOllama(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
+  const base = settings.ollamaBaseUrl.trim().replace(/\/+$/, '')
+  const model = settings.ollamaModel.trim()
+
+  let res: Response
+  try {
+    res = await fetchWithTimeout(`${base}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        format: OLLAMA_SCHEMA,
+        options: { temperature: 0 },
+        messages: [{
+          role: 'user',
+          content: text,
+          // Ollama erwartet reines Base64 ohne data:-Präfix
+          images: dataUrls.map(url => url.replace(/^data:[^;]+;base64,/, '')),
+        }],
+      }),
+    })
+  } catch (e) {
+    throw new Error(describeNetworkFailure(e, 'Ollama', base))
+  }
+
+  if (!res.ok) {
+    const detail = await readErrorDetail(res)
+    if (res.status === 404) {
+      throw new Error(`Ollama kennt das Modell "${model}" nicht (HTTP 404). Mit "ollama pull ${model}" laden oder den Namen in den Einstellungen anpassen.${detail}`)
+    }
+    throw new Error(`Ollama antwortete mit HTTP ${res.status}${detail}`)
+  }
+
+  const data = await res.json()
+  if (typeof data?.error === 'string' && data.error.trim()) {
+    throw new Error(`Ollama meldet: ${data.error.trim().slice(0, 300)}`)
+  }
+  const content = data?.message?.content
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new Error('Ollama lieferte eine leere Antwort. Unterstützt das gewählte Modell Bildeingaben?')
+  }
+  return content
+}
+
+async function callOpenAi(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
+  const body: Record<string, any> = {
+    model: settings.openaiModel.trim(),
+    reasoning_effort: settings.openaiReasoningEffort,
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: 'beleg_extraktion', strict: true, schema: OPENAI_SCHEMA },
+    },
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text },
+        ...dataUrls.map(url => ({ type: 'image_url', image_url: { url } })),
+      ],
+    }],
+  }
+
+  const send = async (payload: Record<string, any>) => fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.openaiApiKey.trim()}`,
+    },
+    body: JSON.stringify(payload),
+  })
+
+  let res: Response
+  try {
+    res = await send(body)
+    if (res.status === 400) {
+      // Nicht jedes Modell akzeptiert reasoning_effort – ohne den Parameter erneut versuchen.
+      const { reasoning_effort: _ignored, ...withoutEffort } = body
+      res = await send(withoutEffort)
+    }
+  } catch (e) {
+    throw new Error(describeNetworkFailure(e, 'OpenAI', 'api.openai.com'))
+  }
+
+  if (!res.ok) {
+    const detail = await readErrorDetail(res)
+    if (res.status === 401) {
+      throw new Error(`OpenAI hat den API-Key abgelehnt (HTTP 401).${detail}`)
+    }
+    if (res.status === 429) {
+      throw new Error(`OpenAI hat die Anfrage wegen Ratenbegrenzung oder fehlendem Guthaben abgewiesen (HTTP 429).${detail}`)
+    }
+    throw new Error(`OpenAI antwortete mit HTTP ${res.status}${detail}`)
+  }
+
+  const data = await res.json()
+  const content = data?.choices?.[0]?.message?.content
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new Error('OpenAI lieferte eine leere Antwort.')
+  }
+  return content
+}
+
+export function useDocumentExtraction() {
+  const { documents, updateDocument } = useAppState()
+  const { settings, isConfigured } = useLlmSettings()
+  const { loadPdf, generateThumbnail } = usePdfUtils()
+
+  /** Erste Seiten als JPEG-DataURLs. Bei Bildern das Bild selbst, verkleinert. */
+  async function collectPageImages(doc: DocumentFile): Promise<string[]> {
+    if (doc.type === 'image') {
+      try {
+        return [await generateThumbnail(doc.file, 1400, 1980)]
+      } catch {
+        return []
+      }
+    }
+
+    let handle: Awaited<ReturnType<typeof loadPdf>> | null = null
+    try {
+      handle = await loadPdf(doc.file, doc.password)
+      const pageCount = Math.min(handle.numPages, MAX_PAGE_IMAGES)
+      const images: string[] = []
+      for (let page = 1; page <= pageCount; page++) {
+        images.push(await handle.renderPage(page, PAGE_RENDER_SCALE))
+      }
+      return images
+    } catch {
+      return doc.thumbnailDataUrl ? [doc.thumbnailDataUrl] : []
+    } finally {
+      if (handle) {
+        try { handle.destroy() } catch {}
+      }
+    }
+  }
+
+  async function extractFromDocument(doc: DocumentFile): Promise<DocumentExtraction> {
+    const images = await collectPageImages(doc)
+    if (images.length === 0 && !doc.extractedText.trim()) {
+      throw new Error('Der Beleg ließ sich weder als Text noch als Seitenbild lesen.')
+    }
+
+    const text = buildUserText(doc.extractedText, doc.name)
+
+    const content = settings.value.provider === 'openai'
+      ? await callOpenAi(settings.value, text, images)
+      : await callOllama(settings.value, text, images)
+
+    let parsed: any
+    try {
+      parsed = JSON.parse(stripCodeFences(content))
+    } catch {
+      throw new Error(`Antwort des Modells war kein gültiges JSON: ${content.trim().slice(0, 200)}`)
+    }
+    return normalizeExtraction(parsed, fallbackTitleFromName(doc.name))
+  }
+
+  async function runFor(docId: string): Promise<void> {
+    const doc = documents.value.find(d => d.id === docId)
+    if (!doc) return
+
+    if (!isConfigured.value) {
+      updateDocument(docId, { extractionStatus: 'skipped', extractionError: undefined })
+      return
+    }
+    if (doc.locked) {
+      updateDocument(docId, {
+        extractionStatus: 'skipped',
+        extractionError: 'Beleg ist passwortgeschützt und wurde nicht analysiert.',
+      })
+      return
+    }
+
+    updateDocument(docId, { extractionStatus: 'running', extractionError: undefined })
+    try {
+      const result = await extractFromDocument(doc)
+      updateDocument(docId, {
+        title: result.title,
+        correspondent: result.correspondent,
+        documentDate: result.documentDate,
+        totalAmount: result.totalAmount,
+        extractionStatus: 'done',
+        extractionError: undefined,
+      })
+    } catch (e: any) {
+      console.warn(`Beleganalyse fehlgeschlagen für "${doc.name}":`, e)
+      updateDocument(docId, {
+        extractionStatus: 'failed',
+        extractionError: e?.message || 'Analyse fehlgeschlagen',
+      })
+    }
+  }
+
+  async function pump(): Promise<void> {
+    if (pumping) return
+    pumping = true
+    try {
+      while (queued.value.length > 0) {
+        const next = queued.value.shift()!
+        activeDocId.value = next
+        await runFor(next)
+        batchCompleted.value++
+        activeDocId.value = null
+      }
+    } finally {
+      activeDocId.value = null
+      pumping = false
+      batchTotal.value = 0
+      batchCompleted.value = 0
+    }
+  }
+
+  /** Reiht einen Beleg zur Analyse ein. Mehrfachaufrufe für denselben Beleg sind unschädlich. */
+  function queueExtraction(docId: string): void {
+    if (activeDocId.value === docId || queued.value.includes(docId)) return
+    queued.value.push(docId)
+    batchTotal.value++
+    void pump()
+  }
+
+  function queueMissing(): void {
+    for (const doc of documents.value) {
+      if (doc.extractionStatus === 'done' || doc.extractionStatus === 'running') continue
+      queueExtraction(doc.id)
+    }
+  }
+
+  const isExtracting = computed(() => activeDocId.value !== null)
+  const pendingExtractions = computed(() => queued.value.length + (activeDocId.value ? 1 : 0))
+  const extractionProgressPercent = computed(() =>
+    batchTotal.value > 0 ? Math.round((batchCompleted.value / batchTotal.value) * 100) : 0,
+  )
+
+  return {
+    queueExtraction,
+    queueMissing,
+    activeDocId,
+    isExtracting,
+    pendingExtractions,
+    batchTotal,
+    batchCompleted,
+    extractionProgressPercent,
+  }
+}

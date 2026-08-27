@@ -1,5 +1,5 @@
 <script setup lang="ts">
-const { bookings, stats, getDocument } = useAppState()
+const { bookings, stats, getDocument, currentBspId, bspList } = useAppState()
 const { exportBsp } = usePdfUtils()
 const { createNewBsp, saveState } = usePersistence()
 
@@ -10,7 +10,7 @@ const error = ref('')
 
 const sortedBookingsWithDocs = computed(() =>
   [...bookings.value]
-    .filter(b => b.documentId)
+    .filter(b => b.documentIds.length > 0)
     .sort((a, b) => {
       const da = a.date?.getTime() ?? 0
       const db = b.date?.getTime() ?? 0
@@ -18,8 +18,12 @@ const sortedBookingsWithDocs = computed(() =>
     }),
 )
 
+const exportDocCount = computed(() =>
+  sortedBookingsWithDocs.value.reduce((sum, b) => sum + b.documentIds.length, 0),
+)
+
 const unverifiedCount = computed(() =>
-  bookings.value.filter(b => b.documentId !== null && !b.verified).length,
+  bookings.value.filter(b => b.documentIds.length > 0 && !b.verified).length,
 )
 
 const fabStateClass = computed(() => {
@@ -29,7 +33,7 @@ const fabStateClass = computed(() => {
   if (stats.value.missing > 0) {
     return 'bg-amber-500 hover:bg-amber-600 shadow-amber-500/40 hover:shadow-amber-500/50'
   }
-  return 'bg-green-500 hover:bg-green-600 shadow-green-500/50 hover:shadow-green-500/60'
+  return 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/50 hover:shadow-emerald-500/60'
 })
 
 const fabTitle = computed(() => {
@@ -55,6 +59,18 @@ function startNew() {
   createNewBsp()
 }
 
+function buildExportFileName(): string {
+  const meta = bspList.value.find(b => b.id === currentBspId.value)
+  const raw = meta?.name?.trim() || ''
+  // Für Dateisysteme unzulässige Zeichen ersetzen
+  const sanitized = raw
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const base = sanitized || `Belegstoffpaeckchen_${new Date().toISOString().split('T')[0]}`
+  return `${base}.pdf`
+}
+
 async function download() {
   if (isExporting.value || stats.value.withDoc === 0) return
   isExporting.value = true
@@ -66,7 +82,7 @@ async function download() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `Belegstoffpaeckchen_${new Date().toISOString().split('T')[0]}.pdf`
+    a.download = buildExportFileName()
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -88,7 +104,7 @@ async function download() {
       <Transition name="shimmer">
         <div
           v-if="stats.missing === 0 && stats.withDoc > 0"
-          class="absolute inset-0 rounded-2xl bg-green-500 blur-xl opacity-50 shimmer-glow pointer-events-none"
+          class="absolute inset-0 rounded-2xl bg-emerald-500 blur-xl opacity-50 shimmer-glow pointer-events-none"
         />
       </Transition>
 
@@ -113,10 +129,10 @@ async function download() {
     <Transition name="modal">
       <div
         v-if="showModal"
-        class="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4"
+        class="fixed inset-0 bg-gray-900/40 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4"
         @click.self="closeModal"
       >
-        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden">
+        <div class="modal-panel bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden">
           <div class="p-8 text-center">
             <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-6 flex items-center justify-center gap-3">
               <font-awesome-icon icon="gift" class="text-primary-500" />
@@ -128,8 +144,8 @@ async function download() {
                 <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ stats.total }}</p>
                 <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Buchungen</p>
               </div>
-              <div class="bg-green-50 dark:bg-green-900/20 rounded-xl p-3">
-                <p class="text-2xl font-bold text-green-600 dark:text-green-400">{{ stats.withDoc }}</p>
+              <div class="bg-emerald-50/60 dark:bg-emerald-900/10 rounded-xl p-3">
+                <p class="text-2xl font-bold text-emerald-500 dark:text-emerald-300">{{ stats.withDoc }}</p>
                 <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Mit Beleg</p>
               </div>
               <div class="bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-3">
@@ -199,11 +215,11 @@ async function download() {
 
             <div
               v-if="exportDone"
-              class="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-3 mb-5"
+              class="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl p-3 mb-5"
             >
               <div class="flex items-center justify-center gap-2">
-                <font-awesome-icon icon="circle-check" class="text-green-500" />
-                <span class="text-sm font-medium text-green-800 dark:text-green-300">
+                <font-awesome-icon icon="circle-check" class="text-emerald-500" />
+                <span class="text-sm font-medium text-emerald-800 dark:text-emerald-300">
                   PDF wurde erfolgreich heruntergeladen!
                 </span>
               </div>
@@ -244,7 +260,7 @@ async function download() {
             </div>
 
             <p class="text-xs text-gray-400 dark:text-gray-500 mt-4">
-              {{ sortedBookingsWithDocs.length }} Belege in chronologischer Reihenfolge
+              {{ exportDocCount }} Belege in chronologischer Reihenfolge
             </p>
           </div>
 
@@ -263,27 +279,6 @@ async function download() {
 </template>
 
 <style scoped>
-.modal-enter-active,
-.modal-leave-active {
-  transition: opacity 0.2s ease;
-}
-.modal-enter-active > div,
-.modal-leave-active > div {
-  transition: transform 0.2s ease, opacity 0.2s ease;
-}
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-.modal-enter-from > div {
-  transform: scale(0.95) translateY(10px);
-  opacity: 0;
-}
-.modal-leave-to > div {
-  transform: scale(0.95) translateY(10px);
-  opacity: 0;
-}
-
 .fab-btn {
   transition:
     background-color 0.6s ease,

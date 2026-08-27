@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { BspMeta } from '~/types'
 
-const { bspList } = useAppState()
+const { bspList, showSettings } = useAppState()
 const { isDark, toggle } = useDarkMode()
 const { switchToBsp, createNewBsp, deleteBsp } = usePersistence()
 
@@ -40,13 +40,22 @@ const sortedBsps = computed(() =>
 <template>
   <div class="max-w-5xl mx-auto px-4 sm:px-6 py-10">
     <div class="text-center mb-10 relative">
-      <button
-        class="absolute right-0 top-0 p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-        :title="isDark ? 'Helles Design' : 'Dunkles Design'"
-        @click="toggle"
-      >
-        <font-awesome-icon :icon="isDark ? 'sun' : 'moon'" class="w-4 h-4" />
-      </button>
+      <div class="absolute right-0 top-0 flex items-center gap-1">
+        <button
+          class="p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="Beleganalyse einrichten"
+          @click="showSettings = true"
+        >
+          <font-awesome-icon icon="gear" class="w-4 h-4" />
+        </button>
+        <button
+          class="p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          :title="isDark ? 'Helles Design' : 'Dunkles Design'"
+          @click="toggle"
+        >
+          <font-awesome-icon :icon="isDark ? 'sun' : 'moon'" class="w-4 h-4" />
+        </button>
+      </div>
       <div class="flex items-center justify-center gap-3 mb-2">
         <font-awesome-icon icon="gift" class="text-primary-500 text-3xl" />
         <h1 class="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">
@@ -109,13 +118,13 @@ const sortedBsps = computed(() =>
               class="text-center px-2 py-1.5 rounded-lg transition-colors"
               :class="(bsp.missingCount ?? 0) > 0
                 ? 'bg-amber-50 dark:bg-amber-900/20'
-                : 'bg-green-50 dark:bg-green-900/20'"
+                : 'bg-emerald-50 dark:bg-emerald-900/20'"
             >
               <div
                 class="text-lg font-bold flex items-center justify-center h-7"
                 :class="(bsp.missingCount ?? 0) > 0
                   ? 'text-amber-600 dark:text-amber-400'
-                  : 'text-green-600 dark:text-green-400'"
+                  : 'text-emerald-600 dark:text-emerald-400'"
               >
                 <template v-if="(bsp.missingCount ?? 0) > 0">
                   {{ bsp.missingCount }}
@@ -144,12 +153,13 @@ const sortedBsps = computed(() =>
   </div>
 
   <Teleport to="body">
-    <div
-      v-if="deleteTarget"
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]"
-      @click.self="deleteTarget = null"
-    >
-      <div class="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-2xl max-w-sm mx-4">
+    <Transition name="modal">
+      <div
+        v-if="deleteTarget"
+        class="fixed inset-0 bg-gray-900/40 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]"
+        @click.self="deleteTarget = null"
+      >
+        <div class="modal-panel bg-white dark:bg-gray-800 rounded-xl p-6 shadow-2xl max-w-sm mx-4">
         <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">
           BSP löschen?
         </h3>
@@ -173,7 +183,8 @@ const sortedBsps = computed(() =>
             Löschen
           </button>
         </div>
+        </div>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>

@@ -8,8 +8,6 @@ const {
   showColumnMapper,
   tableFileName,
   currentStep,
-  currentBspId,
-  bspList,
   isProcessing,
   processingMessage,
 } = useAppState()
@@ -31,11 +29,6 @@ async function handleTableUpload(file: File) {
     allTableRows.value = rows
     tablePreviewRows.value = rows.slice(0, 50)
     tableFileName.value = file.name
-
-    const meta = bspList.value.find(b => b.id === currentBspId.value)
-    if (meta) {
-      meta.name = file.name.replace(/\.[^.]+$/, '')
-    }
 
     const detected = detectColumns(headers, rows)
     columnMapping.value = detected
@@ -184,15 +177,19 @@ function applyMapping(importFilters?: { dateFrom: string | null; dateTo: string 
     </div>
 
     <!-- ColumnMapper Modal -->
-    <ColumnMapper
-      v-if="showColumnMapper"
-      :headers="tableHeaders"
-      :preview-rows="tablePreviewRows.slice(0, 5)"
-      :all-rows="allTableRows"
-      :mapping="columnMapping"
-      @update:mapping="columnMapping = $event"
-      @apply="applyMapping"
-      @close="showColumnMapper = false"
-    />
+    <Teleport to="body">
+      <Transition name="modal">
+        <ColumnMapper
+          v-if="showColumnMapper"
+          :headers="tableHeaders"
+          :preview-rows="tablePreviewRows.slice(0, 5)"
+          :all-rows="allTableRows"
+          :mapping="columnMapping"
+          @update:mapping="columnMapping = $event"
+          @apply="applyMapping"
+          @close="showColumnMapper = false"
+        />
+      </Transition>
+    </Teleport>
   </div>
 </template>

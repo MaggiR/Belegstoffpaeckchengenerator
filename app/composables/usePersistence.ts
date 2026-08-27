@@ -1,13 +1,27 @@
-import type { BspMeta } from '~/types'
+import type { BspMeta, ExtractionStatus } from '~/types'
+import { fallbackTitleFromName } from '~/composables/useDocumentExtraction'
 
 const DB_NAME = 'bsp-generator'
 const DB_VERSION = 2
 const FILES_STORE = 'files'
+const STATE_STORE = 'state'
 const BSP_LIST_KEY = 'bsp-list'
 
 let dbInstance: IDBDatabase | null = null
 let saveFilesTimeout: ReturnType<typeof setTimeout> | null = null
+let saveStateTimeout: ReturnType<typeof setTimeout> | null = null
 let isSavingFiles = false
+let pendingFileSave = false
+
+/** Während ein Stand geladen wird, dürfen Auto-Saves nicht den leeren Zwischenzustand wegschreiben. */
+let isRestoring = false
+
+/**
+ * Nach einem fehlgeschlagenen Ladevorgang bleiben Auto-Saves gesperrt, damit
+ * der (noch intakte) gespeicherte Stand nicht mit einem leeren überschrieben
+ * wird. Ein erfolgreicher Ladevorgang hebt die Sperre wieder auf.
+ */
+let savesBlocked = false
 
 function openDB(): Promise<IDBDatabase> {
   if (dbInstance) return Promise.resolve(dbInstance)
@@ -58,6 +72,44 @@ function idbGetAll<T = any>(store: string): Promise<T[]> {
   }))
 }
 
+function idbGet<T = any>(store: string, key: string): Promise<T | undefined> {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readonly')
+    const req = tx.objectStore(store).get(key)
+    req.onsuccess = () => resolve(req.result as T | undefined)
+    req.onerror = () => reject(req.error)
+  }))
+}
+
+/** Für Stores ohne keyPath (z. B. den State-Store) mit explizitem Schlüssel schreiben. */
+function idbPutKeyed(store: string, key: string, value: any): Promise<void> {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite')
+    const req = tx.objectStore(store).put(value, key)
+    req.onsuccess = () => resolve()
+    req.onerror = () => reject(req.error)
+  }))
+}
+
+/**
+ * Bittet den Browser, den Speicher des Origins als persistent zu markieren.
+ * Ohne dies darf der Browser IndexedDB und localStorage bei Speicherdruck
+ * automatisch räumen – genau das soll nie passieren.
+ */
+function requestPersistentStorage(): void {
+  try {
+    if (!navigator.storage?.persist) return
+    navigator.storage.persisted().then((already) => {
+      if (already) return
+      navigator.storage.persist().then((granted) => {
+        if (!granted) {
+          console.warn('Browser hat persistenten Speicher nicht gewährt – Daten könnten bei Speicherdruck geräumt werden.')
+        }
+      })
+    }).catch(() => {})
+  } catch {}
+}
+
 interface StoredFileEntry {
   id: string
   bspId: string
@@ -70,6 +122,12 @@ interface StoredFileEntry {
   encrypted?: boolean
   locked?: boolean
   password?: string
+  title?: string
+  correspondent?: string | null
+  documentDate?: string | null
+  totalAmount?: number | null
+  extractionStatus?: ExtractionStatus
+  extractionError?: string
   data: ArrayBuffer
 }
 
@@ -79,9 +137,17 @@ interface SerializedBooking {
   amount: number
   description: string
   remarks: string
-  documentId: string | null
+  documentIds: string[]
+  /** Nur in Zuständen vor der Mehrfachzuordnung vorhanden. */
+  documentId?: string | null
   noDocRequired: boolean
   verified?: boolean
+}
+
+/** Zählt zugeordnete Belege in gespeicherten Buchungen beider Formate. */
+function serializedDocCount(booking: any): number {
+  if (Array.isArray(booking?.documentIds)) return booking.documentIds.length
+  return booking?.documentId ? 1 : 0
 }
 
 function lsKey(bspId: string): string {
@@ -117,15 +183,24 @@ export function usePersistence() {
   }
 
   function deserializeBookings(data: SerializedBooking[]): void {
-    bookings.value = data.map(b => ({
-      ...b,
-      date: b.date ? new Date(b.date) : null,
-      verified: b.verified ?? false,
-    }))
+    bookings.value = data.map((b) => {
+      const { documentId, ...rest } = b
+      // Zustände vor der Mehrfachzuordnung kannten nur einen Beleg pro Buchung.
+      const documentIds = Array.isArray(b.documentIds)
+        ? b.documentIds
+        : documentId ? [documentId] : []
+      return {
+        ...rest,
+        documentIds,
+        date: b.date ? new Date(b.date) : null,
+        verified: b.verified ?? false,
+      }
+    })
   }
 
   function buildStateSnapshot() {
     return {
+      savedAt: Date.now(),
       currentStep: currentStep.value,
       bookings: serializeBookings(),
       columnMapping: columnMapping.value,
@@ -147,6 +222,12 @@ export function usePersistence() {
         encrypted: d.encrypted,
         locked: d.locked,
         password: d.password,
+        title: d.title,
+        correspondent: d.correspondent,
+        documentDate: d.documentDate,
+        totalAmount: d.totalAmount,
+        extractionStatus: d.extractionStatus,
+        extractionError: d.extractionError,
       })),
     }
   }
@@ -157,21 +238,57 @@ export function usePersistence() {
     } catch {}
   }
 
-  function saveToLocalStorage(): void {
+  /**
+   * Zustand nach IndexedDB schreiben. IndexedDB statt localStorage, weil der
+   * Snapshot (Thumbnails, OCR-Texte, Tabellenzeilen) das localStorage-Limit
+   * von ~5 MB leicht sprengt – fehlgeschlagene Saves waren still und führten
+   * beim nächsten Laden zu scheinbar "verschwundenen" Daten.
+   */
+  async function saveStateNow(): Promise<void> {
     const bspId = currentBspId.value
-    if (!bspId) return
+    if (!bspId || isRestoring || savesBlocked) return
     try {
-      localStorage.setItem(lsKey(bspId), JSON.stringify(buildStateSnapshot()))
+      // JSON-Runde entfernt Vue-Reaktivitätsproxies, die IndexedDB nicht klonen kann.
+      const snapshot = JSON.parse(JSON.stringify(buildStateSnapshot()))
+      await idbPutKeyed(STATE_STORE, bspId, snapshot)
       updateCurrentBspMeta()
       saveBspList()
     } catch (e) {
-      console.warn('localStorage save fehlgeschlagen:', e)
+      console.warn('Speichern des Zustands fehlgeschlagen:', e)
+    }
+  }
+
+  function debouncedStateSave(): void {
+    if (saveStateTimeout) clearTimeout(saveStateTimeout)
+    saveStateTimeout = setTimeout(() => {
+      saveStateTimeout = null
+      void saveStateNow()
+    }, 300)
+  }
+
+  /** Ausstehende (debouncte) Speichervorgänge sofort anstoßen. */
+  function flushPendingSaves(): void {
+    if (saveStateTimeout) {
+      clearTimeout(saveStateTimeout)
+      saveStateTimeout = null
+    }
+    void saveStateNow()
+    if (saveFilesTimeout) {
+      clearTimeout(saveFilesTimeout)
+      saveFilesTimeout = null
+      void saveFilesToIdb()
     }
   }
 
   async function saveFilesToIdb(): Promise<void> {
     const bspId = currentBspId.value
-    if (!bspId || isSavingFiles) return
+    // Während des Ladens ist documents leer – ein Lauf in dem Moment würde
+    // alle gespeicherten Dateien dieses BSPs löschen.
+    if (!bspId || isRestoring || savesBlocked) return
+    if (isSavingFiles) {
+      pendingFileSave = true
+      return
+    }
     isSavingFiles = true
     try {
       const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
@@ -200,6 +317,12 @@ export function usePersistence() {
             encrypted: doc.encrypted,
             locked: doc.locked,
             password: doc.password,
+            title: doc.title,
+            correspondent: doc.correspondent,
+            documentDate: doc.documentDate,
+            totalAmount: doc.totalAmount,
+            extractionStatus: doc.extractionStatus,
+            extractionError: doc.extractionError,
             data: await doc.file.arrayBuffer(),
           }
           await idbPut(FILES_STORE, entry)
@@ -210,8 +333,14 @@ export function usePersistence() {
           || stored.encrypted !== doc.encrypted
           || stored.locked !== doc.locked
           || stored.password !== doc.password
+          || stored.title !== doc.title
+          || stored.correspondent !== doc.correspondent
+          || stored.documentDate !== doc.documentDate
+          || stored.totalAmount !== doc.totalAmount
+          || stored.extractionStatus !== doc.extractionStatus
+          || stored.extractionError !== doc.extractionError
         ) {
-          // Metadaten aktualisieren (z. B. nach Entschlüsselung – Thumbnail/Text/Passwort).
+          // Metadaten aktualisieren (z. B. nach Entschlüsselung oder LLM-Analyse).
           await idbPut(FILES_STORE, {
             ...stored,
             extractedText: doc.extractedText,
@@ -220,6 +349,12 @@ export function usePersistence() {
             encrypted: doc.encrypted,
             locked: doc.locked,
             password: doc.password,
+            title: doc.title,
+            correspondent: doc.correspondent,
+            documentDate: doc.documentDate,
+            totalAmount: doc.totalAmount,
+            extractionStatus: doc.extractionStatus,
+            extractionError: doc.extractionError,
           })
         }
       }
@@ -227,6 +362,11 @@ export function usePersistence() {
       console.warn('IDB file save fehlgeschlagen:', e)
     } finally {
       isSavingFiles = false
+      // Änderungen, die während des Laufs eintrafen, nicht verwerfen.
+      if (pendingFileSave) {
+        pendingFileSave = false
+        void saveFilesToIdb()
+      }
     }
   }
 
@@ -236,17 +376,43 @@ export function usePersistence() {
   }
 
   function saveAll(): void {
-    saveToLocalStorage()
+    debouncedStateSave()
     debouncedFileSave()
   }
 
-  async function loadBspState(bspId: string): Promise<boolean> {
+  /**
+   * `loaded`: Stand wiederhergestellt · `empty`: kein Stand vorhanden (z. B.
+   * neues BSP) · `error`: Laden gescheitert – Auto-Saves bleiben gesperrt,
+   * damit der gespeicherte Stand nicht überschrieben wird.
+   */
+  async function loadBspState(bspId: string): Promise<'loaded' | 'empty' | 'error'> {
+    isRestoring = true
     try {
-      const raw = localStorage.getItem(lsKey(bspId))
-      if (!raw) return false
+      // Primärquelle IndexedDB; localStorage nur noch als Alt-Format bzw.
+      // als Notfall-Sicherung vom Entladen der Seite.
+      let idbState: any
+      try {
+        idbState = await idbGet(STATE_STORE, bspId)
+      } catch {
+        idbState = undefined
+      }
 
-      const state = JSON.parse(raw)
-      if (!state) return false
+      let lsState: any
+      try {
+        const raw = localStorage.getItem(lsKey(bspId))
+        if (raw) lsState = JSON.parse(raw)
+      } catch {}
+
+      // Bei zwei Ständen gewinnt der neuere (Alt-Format ohne savedAt gilt als 0).
+      let state = idbState
+      if (lsState && (!idbState || (lsState.savedAt ?? 0) > (idbState.savedAt ?? 0))) {
+        state = lsState
+      }
+
+      if (!state) {
+        savesBlocked = false
+        return 'empty'
+      }
 
       currentStep.value = state.currentStep ?? 1
       columnMapping.value = state.columnMapping ?? { date: null, amount: null, description: null, remarks: null }
@@ -269,43 +435,58 @@ export function usePersistence() {
       const docMeta: Array<any> = state.documentMeta ?? []
       documents.value = docMeta.map((meta: any) => {
         const stored = fileMap.get(meta.id)
-        if (!stored) {
-          return {
-            id: meta.id,
-            file: new File([], meta.name || 'unknown', { type: meta.type === 'pdf' ? 'application/pdf' : 'image/jpeg' }),
-            name: meta.name,
-            type: meta.type,
-            extractedText: meta.extractedText ?? '',
-            thumbnailDataUrl: meta.thumbnailDataUrl ?? null,
-            ocrProcessed: meta.ocrProcessed ?? false,
-            encrypted: meta.encrypted ?? false,
-            locked: meta.locked ?? false,
-            password: meta.password,
-          }
-        }
-        const file = new File([stored.data], stored.name, { type: stored.mimeType })
+        const file = stored
+          ? new File([stored.data], stored.name, { type: stored.mimeType })
+          : new File([], meta.name || 'unknown', { type: meta.type === 'pdf' ? 'application/pdf' : 'image/jpeg' })
+
+        // Belege aus Zuständen vor der LLM-Auswertung gelten als "nicht analysiert",
+        // damit sie in der Oberfläche nachgeholt werden können.
         return {
           id: meta.id,
           file,
           name: meta.name,
           type: meta.type,
-          extractedText: stored.extractedText ?? meta.extractedText ?? '',
-          thumbnailDataUrl: stored.thumbnailDataUrl ?? meta.thumbnailDataUrl ?? null,
-          ocrProcessed: stored.ocrProcessed ?? meta.ocrProcessed ?? false,
-          encrypted: stored.encrypted ?? meta.encrypted ?? false,
-          locked: stored.locked ?? meta.locked ?? false,
-          password: stored.password ?? meta.password,
+          extractedText: stored?.extractedText ?? meta.extractedText ?? '',
+          thumbnailDataUrl: stored?.thumbnailDataUrl ?? meta.thumbnailDataUrl ?? null,
+          ocrProcessed: stored?.ocrProcessed ?? meta.ocrProcessed ?? false,
+          encrypted: stored?.encrypted ?? meta.encrypted ?? false,
+          locked: stored?.locked ?? meta.locked ?? false,
+          password: stored?.password ?? meta.password,
+          title: stored?.title ?? meta.title ?? fallbackTitleFromName(meta.name ?? ''),
+          correspondent: stored?.correspondent ?? meta.correspondent ?? null,
+          documentDate: stored?.documentDate ?? meta.documentDate ?? null,
+          totalAmount: stored?.totalAmount ?? meta.totalAmount ?? null,
+          extractionStatus: stored?.extractionStatus ?? meta.extractionStatus ?? 'skipped',
+          extractionError: stored?.extractionError ?? meta.extractionError,
         }
       })
 
-      return true
+      // Migration: Stand künftig in IndexedDB halten, localStorage-Kopie erst
+      // nach erfolgreichem Schreiben entfernen (Quota-Entlastung).
+      if (state !== idbState) {
+        try {
+          await idbPutKeyed(STATE_STORE, bspId, state)
+          localStorage.removeItem(lsKey(bspId))
+        } catch {}
+      } else if (lsState) {
+        try {
+          localStorage.removeItem(lsKey(bspId))
+        } catch {}
+      }
+
+      savesBlocked = false
+      return 'loaded'
     } catch (e) {
-      console.warn('Laden fehlgeschlagen:', e)
-      return false
+      savesBlocked = true
+      console.error('Laden des gespeicherten Stands fehlgeschlagen – automatisches Speichern ist pausiert, damit der Stand nicht überschrieben wird:', e)
+      return 'error'
+    } finally {
+      isRestoring = false
     }
   }
 
   async function loadInitial(): Promise<boolean> {
+    requestPersistentStorage()
     try {
       const raw = localStorage.getItem(BSP_LIST_KEY)
       if (raw) {
@@ -318,10 +499,10 @@ export function usePersistence() {
         if (meta.missingCount === undefined) {
           try {
             const stateRaw = localStorage.getItem(lsKey(meta.id))
-            if (stateRaw) {
-              const parsed = JSON.parse(stateRaw)
+            const parsed = stateRaw ? JSON.parse(stateRaw) : await idbGet(STATE_STORE, meta.id)
+            if (parsed) {
               const bookings = parsed?.bookings ?? []
-              meta.missingCount = bookings.filter((b: any) => !b.documentId && !b.noDocRequired).length
+              meta.missingCount = bookings.filter((b: any) => serializedDocCount(b) === 0 && !b.noDocRequired).length
             } else {
               meta.missingCount = 0
             }
@@ -348,8 +529,8 @@ export function usePersistence() {
           updatedAt: new Date().toISOString(),
           bookingCount: parsed.bookings?.length ?? 0,
           documentCount: parsed.documentMeta?.length ?? 0,
-          assignedCount: parsed.bookings?.filter((b: any) => b.documentId)?.length ?? 0,
-          missingCount: parsed.bookings?.filter((b: any) => !b.documentId && !b.noDocRequired)?.length ?? 0,
+          assignedCount: parsed.bookings?.filter((b: any) => serializedDocCount(b) > 0)?.length ?? 0,
+          missingCount: parsed.bookings?.filter((b: any) => serializedDocCount(b) === 0 && !b.noDocRequired)?.length ?? 0,
         })
 
         // Migrate files: add bspId to existing entries
@@ -392,10 +573,21 @@ export function usePersistence() {
 
   async function switchToBsp(bspId: string): Promise<void> {
     if (currentBspId.value) {
-      saveToLocalStorage()
+      if (saveStateTimeout) {
+        clearTimeout(saveStateTimeout)
+        saveStateTimeout = null
+      }
+      if (saveFilesTimeout) {
+        clearTimeout(saveFilesTimeout)
+        saveFilesTimeout = null
+      }
+      await saveStateNow()
       await saveFilesToIdb()
     }
 
+    // Ab hier ist der Editor vorübergehend leer – Auto-Saves müssen warten,
+    // bis der neue Stand vollständig geladen ist.
+    isRestoring = true
     clearEditorState()
     currentBspId.value = bspId
     localStorage.setItem('bsp-active-id', bspId)
@@ -405,7 +597,7 @@ export function usePersistence() {
 
   function createNewBsp(name?: string): string {
     if (currentBspId.value) {
-      saveToLocalStorage()
+      flushPendingSaves()
     }
 
     const id = `bsp-${Date.now()}`
@@ -425,12 +617,18 @@ export function usePersistence() {
     clearEditorState()
     currentBspId.value = id
     localStorage.setItem('bsp-active-id', id)
+    // Ein frisch angelegtes BSP startet bewusst leer – eine evtl. bestehende
+    // Sperre aus einem früheren Ladefehler betrifft es nicht.
+    savesBlocked = false
     activeView.value = 'editor'
     return id
   }
 
   async function deleteBsp(bspId: string): Promise<void> {
     localStorage.removeItem(lsKey(bspId))
+    try {
+      await idbDelete(STATE_STORE, bspId)
+    } catch {}
 
     const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
     for (const f of allFiles) {
@@ -453,6 +651,7 @@ export function usePersistence() {
     if (!bspId) return
     try {
       localStorage.removeItem(lsKey(bspId))
+      await idbDelete(STATE_STORE, bspId)
       const allFiles = await idbGetAll<StoredFileEntry>(FILES_STORE)
       for (const f of allFiles) {
         if (f.bspId === bspId) {
@@ -480,7 +679,7 @@ export function usePersistence() {
         sort,
       ],
       () => {
-        if (currentBspId.value && activeView.value === 'editor') {
+        if (currentBspId.value && activeView.value === 'editor' && !isRestoring && !savesBlocked) {
           saveAll()
         }
       },
@@ -488,10 +687,18 @@ export function usePersistence() {
     )
 
     window.addEventListener('beforeunload', () => {
-      if (currentBspId.value) saveToLocalStorage()
+      const bspId = currentBspId.value
+      if (!bspId || isRestoring || savesBlocked) return
+      flushPendingSaves()
+      // IndexedDB-Schreibvorgänge beim Entladen können abgebrochen werden.
+      // Deshalb zusätzlich synchron nach localStorage – beim nächsten Laden
+      // gewinnt der neuere Stand und wird zurück nach IndexedDB migriert.
+      try {
+        localStorage.setItem(lsKey(bspId), JSON.stringify(buildStateSnapshot()))
+      } catch {}
     })
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden' && currentBspId.value) saveToLocalStorage()
+      if (document.visibilityState === 'hidden' && currentBspId.value) flushPendingSaves()
     })
   }
 

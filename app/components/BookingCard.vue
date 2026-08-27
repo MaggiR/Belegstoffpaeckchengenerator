@@ -17,18 +17,30 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'preview': [bookingId: string]
+  'preview': [bookingId: string, docId?: string]
   'drop-doc': [bookingId: string, docId: string]
   'drop-file': [bookingId: string, files: FileList]
   'toggle-no-doc': [bookingId: string]
   'toggle-verified': [bookingId: string]
-  'unassign': [bookingId: string]
+  'unassign': [bookingId: string, docId?: string]
   'unlock-doc': [docId: string]
 }>()
 
-const { getDocumentForBooking } = useAppState()
+const { getDocumentsForBooking } = useAppState()
 
-const doc = computed(() => getDocumentForBooking(props.booking.id))
+const docs = computed(() => getDocumentsForBooking(props.booking.id))
+const hasDocs = computed(() => docs.value.length > 0)
+const primaryDoc = computed(() => docs.value[0])
+
+const expanded = ref(false)
+const visibleDocs = computed(() => expanded.value ? docs.value : docs.value.slice(0, 1))
+const hiddenCount = computed(() => Math.max(0, docs.value.length - 1))
+
+// Beim Lösen des letzten Belegs bleibt sonst ein aufgeklappter Zustand zurück.
+watch(hiddenCount, (count) => {
+  if (count === 0) expanded.value = false
+})
+
 const dragOver = ref(false)
 
 const formattedDate = computed(() => {
@@ -45,10 +57,6 @@ const formattedAmount = computed(() => {
 })
 
 const isIncoming = computed(() => props.booking.amount > 0)
-
-function stripExtension(name: string): string {
-  return name.replace(/\.[^.]+$/, '')
-}
 
 function onDragOver(e: DragEvent) {
   if (props.booking.noDocRequired) return
@@ -78,23 +86,34 @@ function onDrop(e: DragEvent) {
   }
 }
 
-function onDocDragStart(e: DragEvent) {
-  if (!doc.value) return
-  e.dataTransfer!.setData('application/x-doc-id', doc.value.id)
+function onDocDragStart(e: DragEvent, docId?: string) {
+  if (!docId) return
+  e.dataTransfer!.setData('application/x-doc-id', docId)
   e.dataTransfer!.effectAllowed = 'move'
 }
 
 const statusClass = computed(() => {
-  if (doc.value) return props.booking.verified ? 'bg-emerald-500' : 'bg-green-500'
+  if (hasDocs.value) return props.booking.verified ? 'bg-emerald-500' : 'bg-emerald-400'
   if (props.booking.noDocRequired) return 'bg-gray-300 dark:bg-gray-600'
   return 'bg-amber-500'
 })
 
 const statusLabel = computed(() => {
-  if (doc.value) return props.booking.verified ? 'Geprüft' : 'Zugeordnet'
+  if (hasDocs.value) return props.booking.verified ? 'Geprüft' : 'Zugeordnet'
   if (props.booking.noDocRequired) return 'Kein Beleg erforderlich'
   return 'Ohne Beleg'
 })
+
+function onTileClick() {
+  if (!hasDocs.value || props.isLoading) return
+  const doc = primaryDoc.value
+  if (!doc) return
+  if (doc.locked) {
+    emit('unlock-doc', doc.id)
+    return
+  }
+  emit('preview', props.booking.id, doc.id)
+}
 </script>
 
 <template>
@@ -102,22 +121,26 @@ const statusLabel = computed(() => {
   <div
     v-if="isTile"
     class="border-2 rounded-xl overflow-hidden hover:shadow-lg transition-all group"
-    :class="dragOver
-      ? 'bg-white dark:bg-gray-800 border-primary-500 shadow-lg shadow-primary-500/20'
-      : booking.noDocRequired
-        ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 opacity-60'
-        : doc
-          ? booking.verified
-            ? 'bg-white dark:bg-gray-800 border-emerald-400 dark:border-emerald-600'
-            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'
-          : 'bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'"
+    :class="[
+      dragOver
+        ? 'bg-white dark:bg-gray-800 border-primary-500 shadow-lg shadow-primary-500/20'
+        : booking.noDocRequired
+          ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 opacity-60'
+          : hasDocs
+            ? booking.verified
+              ? 'bg-white dark:bg-gray-800 border-emerald-400 dark:border-emerald-600'
+              : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'
+            : 'bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60',
+      hasDocs && !isLoading ? 'cursor-pointer' : '',
+    ]"
+    @click="onTileClick"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
     <div
       class="aspect-[3/4] relative overflow-hidden"
-      :class="!doc && !booking.noDocRequired
+      :class="!hasDocs && !booking.noDocRequired
         ? 'bg-amber-50/80 dark:bg-amber-950/30'
         : 'bg-gray-50 dark:bg-gray-900'"
     >
@@ -130,12 +153,12 @@ const statusLabel = computed(() => {
         <span class="text-xs text-primary-500 mt-3 font-medium">Wird geladen…</span>
       </div>
       <img
-        v-else-if="doc?.thumbnailDataUrl"
-        :src="doc.thumbnailDataUrl"
-        :alt="doc.name"
+        v-else-if="primaryDoc?.thumbnailDataUrl"
+        :src="primaryDoc.thumbnailDataUrl"
+        :alt="primaryDoc.title"
         class="w-full h-full object-contain"
         draggable="true"
-        @dragstart="onDocDragStart"
+        @dragstart="onDocDragStart($event, primaryDoc?.id)"
       >
       <div
         v-else
@@ -150,11 +173,11 @@ const statusLabel = computed(() => {
 
       <!-- Verified-Checkbox (oben links) -->
       <button
-        v-if="doc"
+        v-if="hasDocs"
         class="absolute top-2 left-2 w-7 h-7 rounded-lg flex items-center justify-center transition-all border-2 shadow-sm"
         :class="booking.verified
           ? 'bg-emerald-500 border-emerald-500 text-white'
-          : 'bg-white/90 dark:bg-gray-800/90 border-gray-300 dark:border-gray-600 text-transparent hover:border-emerald-400 hover:text-emerald-400'"
+          : 'bg-white/90 dark:bg-gray-800/90 border-gray-300 dark:border-gray-600 text-transparent opacity-0 group-hover:opacity-100 hover:border-emerald-400 hover:text-emerald-400'"
         :title="booking.verified ? 'Zuordnung geprüft – zum Entprüfen klicken' : 'Als geprüft markieren'"
         @click.stop="emit('toggle-verified', booking.id)"
       >
@@ -163,25 +186,19 @@ const statusLabel = computed(() => {
 
       <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
-          v-if="doc"
-          class="w-8 h-8 rounded-lg bg-black/50 text-white flex items-center justify-center"
-          title="Vorschau"
-          @click.stop="emit('preview', booking.id)"
-        >
-          <font-awesome-icon icon="eye" class="w-3.5 h-3.5" />
-        </button>
-        <button
-          v-if="doc"
-          class="w-8 h-8 rounded-lg bg-black/50 text-red-300 hover:text-red-400 flex items-center justify-center"
-          title="Beleg entfernen"
+          v-if="hasDocs"
+          class="w-8 h-8 rounded-lg bg-black/50 text-white/70 hover:text-red-400 flex items-center justify-center transition-colors"
+          :title="docs.length > 1 ? 'Alle Belege entfernen' : 'Beleg entfernen'"
           @click.stop="emit('unassign', booking.id)"
         >
           <font-awesome-icon icon="link-slash" class="w-3.5 h-3.5" />
         </button>
         <button
-          v-if="!doc"
-          class="w-9 h-9 rounded-lg bg-black/50 flex items-center justify-center"
-          :class="booking.noDocRequired ? 'text-amber-300 hover:text-amber-200' : 'text-gray-300 hover:text-gray-100'"
+          v-if="!hasDocs"
+          class="w-9 h-9 rounded-lg bg-black/50 text-white/70 flex items-center justify-center transition-colors"
+          :class="booking.noDocRequired
+            ? 'hover:text-amber-300'
+            : 'hover:text-gray-200'"
           :title="booking.noDocRequired ? 'Beleg doch erforderlich' : 'Kein Beleg erforderlich'"
           @click.stop="emit('toggle-no-doc', booking.id)"
         >
@@ -189,12 +206,22 @@ const statusLabel = computed(() => {
         </button>
       </div>
 
+      <!-- Anzahl weiterer Belege -->
       <div
-        v-if="doc"
+        v-if="docs.length > 1"
+        class="absolute bottom-2 right-2 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-black/55 text-white flex items-center gap-1"
+        :title="`${docs.length} Belege zugeordnet`"
+      >
+        <font-awesome-icon icon="layer-group" class="w-2.5 h-2.5" />
+        {{ docs.length }}
+      </div>
+
+      <div
+        v-if="hasDocs"
         class="absolute bottom-2 left-2 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors"
         :class="booking.verified
           ? 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300'
-          : 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400'"
+          : 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400'"
       >
         {{ statusLabel }}
       </div>
@@ -205,7 +232,7 @@ const statusLabel = computed(() => {
         <span class="text-xs text-gray-500 dark:text-gray-400">{{ formattedDate }}</span>
         <span
           class="text-sm font-semibold"
-          :class="isIncoming ? 'text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-white'"
+          :class="isIncoming ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-white'"
         >
           {{ formattedAmount }}
         </span>
@@ -225,11 +252,11 @@ const statusLabel = computed(() => {
     class="border-2 rounded-lg px-4 py-2.5 flex items-center gap-3 hover:shadow-md transition-all group relative overflow-hidden"
     :class="dragOver
       ? 'bg-white dark:bg-gray-800 border-primary-500 shadow-md shadow-primary-500/20'
-      : !doc && !booking.noDocRequired
+      : !hasDocs && !booking.noDocRequired
         ? 'bg-amber-50 dark:bg-amber-950/25 border-amber-400 dark:border-amber-600/70 shadow-sm shadow-amber-500/10'
-        : booking.noDocRequired && !doc
+        : booking.noDocRequired && !hasDocs
           ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 opacity-60'
-          : doc && booking.verified
+          : hasDocs && booking.verified
             ? 'bg-white dark:bg-gray-800 border-emerald-400 dark:border-emerald-600'
             : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'"
     @dragover="onDragOver"
@@ -238,14 +265,14 @@ const statusLabel = computed(() => {
   >
     <!-- Linker Akzentbalken bei fehlendem Beleg -->
     <div
-      v-if="!doc && !booking.noDocRequired"
+      v-if="!hasDocs && !booking.noDocRequired"
       class="absolute left-0 top-0 bottom-0 w-1 bg-amber-500 dark:bg-amber-400"
     />
 
     <!-- Statusspalte (fixe Breite – Checkbox oder Punkt) -->
     <div class="w-6 flex items-center justify-center flex-shrink-0">
       <button
-        v-if="doc"
+        v-if="hasDocs"
         class="w-6 h-6 rounded-md flex items-center justify-center transition-all border-2"
         :class="booking.verified
           ? 'bg-emerald-500 border-emerald-500 text-white'
@@ -266,14 +293,14 @@ const statusLabel = computed(() => {
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <span
         class="text-sm w-20 whitespace-nowrap tabular-nums"
-        :class="!doc && !booking.noDocRequired ? 'text-amber-700 dark:text-amber-300 font-medium' : 'text-gray-500 dark:text-gray-400'"
+        :class="!hasDocs && !booking.noDocRequired ? 'text-amber-700 dark:text-amber-300 font-medium' : 'text-gray-500 dark:text-gray-400'"
       >
         {{ formattedDate }}
       </span>
 
       <span
         class="text-sm font-semibold w-24 text-right tabular-nums"
-        :class="isIncoming ? 'text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-white'"
+        :class="isIncoming ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-white'"
       >
         {{ formattedAmount }}
       </span>
@@ -282,13 +309,36 @@ const statusLabel = computed(() => {
     <div class="flex-1 min-w-0">
       <span
         class="text-sm block line-clamp-2 leading-tight"
-        :class="!doc && !booking.noDocRequired ? 'text-amber-900 dark:text-amber-200 font-medium' : 'text-gray-600 dark:text-gray-400'"
+        :class="!hasDocs && !booking.noDocRequired ? 'text-amber-900 dark:text-amber-200 font-medium' : 'text-gray-600 dark:text-gray-400'"
       >
         {{ booking.description || '—' }}
       </span>
       <span v-if="booking.remarks" v-trunc-title class="text-[10px] text-gray-400 dark:text-gray-500 block truncate mt-0.5">
         {{ booking.remarks }}
       </span>
+    </div>
+
+    <!-- Aktionen der Buchung -->
+    <div class="w-8 flex-shrink-0 flex items-center justify-center">
+      <button
+        v-if="hasDocs"
+        class="p-1.5 rounded-md text-gray-300 dark:text-gray-600 group-hover:text-red-500 dark:group-hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors opacity-0 group-hover:opacity-100"
+        :title="docs.length > 1 ? 'Alle Zuordnungen dieser Buchung lösen' : 'Zuordnung lösen'"
+        @click.stop="emit('unassign', booking.id)"
+      >
+        <font-awesome-icon icon="link-slash" class="w-3.5 h-3.5" />
+      </button>
+      <button
+        v-else
+        class="p-1.5 rounded-md transition-colors opacity-0 group-hover:opacity-100"
+        :class="booking.noDocRequired
+          ? 'text-gray-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+          : 'text-amber-600/70 dark:text-amber-400/70 hover:text-amber-700 hover:bg-amber-200/50 dark:hover:bg-amber-900/40'"
+        :title="booking.noDocRequired ? 'Beleg doch erforderlich' : 'Kein Beleg erforderlich'"
+        @click.stop="emit('toggle-no-doc', booking.id)"
+      >
+        <font-awesome-icon :icon="booking.noDocRequired ? 'file-circle-exclamation' : 'ban'" class="w-4 h-4" />
+      </button>
     </div>
 
     <!-- Beleg-Bereich -->
@@ -301,62 +351,83 @@ const statusLabel = computed(() => {
         <div class="w-5 h-5 border-2 border-primary-200 dark:border-primary-800 border-t-primary-500 rounded-full animate-spin flex-shrink-0" />
         <span class="text-[11px] text-primary-500 font-medium">Wird geladen…</span>
       </div>
-      <!-- Zugeordneter Beleg (wie Sidebar-Darstellung) -->
-      <div
-        v-else-if="doc"
-        class="flex items-center gap-2 px-2 py-1.5 rounded-lg border group/doc transition-colors"
-        :class="doc.locked
-          ? 'bg-amber-50 dark:bg-amber-900/15 border-amber-300 dark:border-amber-700 cursor-pointer hover:border-amber-400'
-          : booking.verified
-            ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700 cursor-grab active:cursor-grabbing'
-            : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 cursor-grab active:cursor-grabbing'"
-        :draggable="!doc.locked"
-        :title="doc.locked ? 'Passwortgeschützt – zum Entsperren klicken' : undefined"
-        @dragstart="doc.locked ? $event.preventDefault() : onDocDragStart($event)"
-        @click.stop="doc.locked ? emit('unlock-doc', doc.id) : emit('preview', booking.id)"
-      >
+
+      <!-- Zugeordnete Belege -->
+      <div v-else-if="hasDocs" class="space-y-1">
         <div
-          class="w-7 h-9 flex-shrink-0 rounded overflow-hidden flex items-center justify-center"
+          v-for="doc in visibleDocs"
+          :key="doc.id"
+          class="flex items-center gap-2 px-2 py-1.5 rounded-lg border group/doc transition-colors"
           :class="doc.locked
-            ? 'bg-amber-100 dark:bg-amber-900/30'
-            : 'bg-white dark:bg-gray-900'"
-        >
-          <font-awesome-icon
-            v-if="doc.locked"
-            icon="lock"
-            class="text-amber-500 dark:text-amber-400 text-xs"
-          />
-          <img
-            v-else-if="doc.thumbnailDataUrl"
-            :src="doc.thumbnailDataUrl"
-            :alt="doc.name"
-            class="w-full h-full object-cover pointer-events-none"
-          >
-          <font-awesome-icon
-            v-else
-            :icon="doc.type === 'pdf' ? 'file-pdf' : 'file-image'"
-            class="text-green-400 text-[9px]"
-          />
-        </div>
-        <span
-          class="text-xs flex-1 min-w-0 line-clamp-2 break-all leading-tight"
-          :class="doc.locked
-            ? 'text-amber-700 dark:text-amber-300 font-medium'
+            ? 'bg-amber-50 dark:bg-amber-900/15 border-amber-300 dark:border-amber-700 cursor-pointer hover:border-amber-400'
             : booking.verified
-              ? 'text-emerald-700 dark:text-emerald-300'
-              : 'text-green-700 dark:text-green-400'"
+              ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700 cursor-grab active:cursor-grabbing'
+              : 'bg-emerald-50/60 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800 cursor-grab active:cursor-grabbing'"
+          :draggable="!doc.locked"
+          :title="doc.locked ? 'Passwortgeschützt – zum Entsperren klicken' : doc.name"
+          @dragstart="doc.locked ? $event.preventDefault() : onDocDragStart($event, doc.id)"
+          @click.stop="doc.locked ? emit('unlock-doc', doc.id) : emit('preview', booking.id, doc.id)"
         >
-          {{ stripExtension(doc.name) }}
-        </span>
+          <div
+            class="w-7 h-9 flex-shrink-0 rounded overflow-hidden flex items-center justify-center"
+            :class="doc.locked
+              ? 'bg-amber-100 dark:bg-amber-900/30'
+              : 'bg-white dark:bg-gray-900'"
+          >
+            <font-awesome-icon
+              v-if="doc.locked"
+              icon="lock"
+              class="text-amber-500 dark:text-amber-400 text-xs"
+            />
+            <img
+              v-else-if="doc.thumbnailDataUrl"
+              :src="doc.thumbnailDataUrl"
+              :alt="doc.title"
+              class="w-full h-full object-cover pointer-events-none"
+            >
+            <font-awesome-icon
+              v-else
+              :icon="doc.type === 'pdf' ? 'file-pdf' : 'file-image'"
+              class="text-emerald-400 text-[9px]"
+            />
+          </div>
+
+          <div class="flex-1 min-w-0">
+            <span
+              class="text-xs block line-clamp-2 leading-tight font-medium"
+              :class="doc.locked
+                ? 'text-amber-700 dark:text-amber-300'
+                : 'text-emerald-800 dark:text-emerald-300'"
+            >
+              {{ doc.title }}
+            </span>
+            <span
+              v-if="doc.correspondent"
+              v-trunc-title
+              class="text-[10px] block truncate text-emerald-600/80 dark:text-emerald-400/70"
+            >
+              {{ doc.correspondent }}
+            </span>
+          </div>
+
+          <button
+            class="w-5 h-5 flex-shrink-0 rounded hover:text-red-500 flex items-center justify-center opacity-0 group-hover/doc:opacity-100 transition-opacity"
+            :class="doc.locked ? 'text-amber-500' : 'text-emerald-500/70'"
+            title="Diesen Beleg entfernen"
+            @click.stop="emit('unassign', booking.id, doc.id)"
+          >
+            <font-awesome-icon icon="xmark" class="w-3 h-3" />
+          </button>
+        </div>
+
+        <!-- Weitere Belege ein- und ausklappen -->
         <button
-          class="w-5 h-5 flex-shrink-0 rounded hover:text-red-500 flex items-center justify-center opacity-0 group-hover/doc:opacity-100 transition-opacity"
-          :class="doc.locked
-            ? 'text-amber-500'
-            : booking.verified ? 'text-emerald-400' : 'text-green-400'"
-          title="Beleg entfernen"
-          @click.stop="emit('unassign', booking.id)"
+          v-if="hiddenCount > 0"
+          class="w-full px-2 py-1 rounded-lg text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/25 hover:bg-emerald-200/70 dark:hover:bg-emerald-900/40 transition-colors flex items-center justify-center gap-1"
+          @click.stop="expanded = !expanded"
         >
-          <font-awesome-icon icon="xmark" class="w-3 h-3" />
+          <font-awesome-icon :icon="expanded ? 'chevron-up' : 'layer-group'" class="w-2.5 h-2.5" />
+          {{ expanded ? 'Weniger anzeigen' : `+${hiddenCount} weitere` }}
         </button>
       </div>
 
@@ -367,13 +438,6 @@ const statusLabel = computed(() => {
       >
         <font-awesome-icon icon="check" class="text-gray-400 dark:text-gray-500 w-3.5 h-3.5 flex-shrink-0" />
         <span class="text-[11px] text-gray-400 dark:text-gray-500 italic flex-1">Kein Beleg erforderlich</span>
-        <button
-          class="p-1.5 rounded-md text-gray-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors opacity-0 group-hover:opacity-100"
-          title="Beleg doch erforderlich"
-          @click.stop="emit('toggle-no-doc', booking.id)"
-        >
-          <font-awesome-icon icon="file-circle-exclamation" class="w-4 h-4" />
-        </button>
       </div>
 
       <!-- Leere Drop-Zone -->
@@ -386,13 +450,6 @@ const statusLabel = computed(() => {
       >
         <font-awesome-icon icon="circle-exclamation" class="text-amber-600 dark:text-amber-400 w-4 h-4 flex-shrink-0" />
         <span class="text-[11px] text-amber-700 dark:text-amber-300 font-semibold flex-1">Ohne Beleg</span>
-        <button
-          class="p-1.5 rounded-md text-amber-600/70 dark:text-amber-400/70 hover:text-amber-700 hover:bg-amber-200/50 dark:hover:bg-amber-900/40 transition-colors opacity-0 group-hover:opacity-100"
-          title="Kein Beleg erforderlich"
-          @click.stop="emit('toggle-no-doc', booking.id)"
-        >
-          <font-awesome-icon icon="ban" class="w-4 h-4" />
-        </button>
       </div>
     </div>
   </div>

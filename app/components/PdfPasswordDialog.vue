@@ -37,12 +37,11 @@ function stripExtension(name: string): string {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4"
-      @click.self="emit('close')"
-    >
-      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-sm w-full p-6">
+  <div
+    class="fixed inset-0 bg-gray-900/40 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4"
+    @click.self="emit('close')"
+  >
+    <div class="modal-panel bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-sm w-full p-6">
         <div class="flex items-center gap-3 mb-4">
           <div class="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center flex-shrink-0">
             <font-awesome-icon icon="lock" class="text-amber-500 dark:text-amber-400" />
@@ -118,7 +117,6 @@ function stripExtension(name: string): string {
             </button>
           </div>
         </form>
-      </div>
     </div>
-  </Teleport>
+  </div>
 </template>

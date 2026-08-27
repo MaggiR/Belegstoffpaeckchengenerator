@@ -7,6 +7,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'close': []
+  'edit': []
 }>()
 
 interface PageState {
@@ -31,6 +32,7 @@ const PAGE_GAP = 24
 const RENDER_SCALE = 2
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 6
+const VIEW_PADDING = 20
 
 const zoom = ref(1)
 const panX = ref(0)
@@ -84,7 +86,17 @@ function resetView() {
   const fitScale = Math.min(1, (vw - 40) / dims.width)
   zoom.value = fitScale
   panX.value = (vw - dims.width * fitScale) / 2
-  panY.value = 20
+  panY.value = VIEW_PADDING
+}
+
+function clampPanY() {
+  const viewport = viewportRef.value
+  const contentH = layerDimensions.value.height * zoom.value
+  if (!viewport || contentH === 0) return
+
+  const maxY = VIEW_PADDING
+  const minY = viewport.clientHeight - VIEW_PADDING - contentH
+  panY.value = minY > maxY ? maxY : Math.min(maxY, Math.max(minY, panY.value))
 }
 
 async function initialize() {
@@ -125,12 +137,13 @@ async function initialize() {
   } catch (err) {
     console.error(err)
     loadError.value = true
-  } finally {
     loadingInitial.value = false
+    return
   }
   await nextTick()
   resetView()
   scheduleVisibilityCheck()
+  loadingInitial.value = false
 }
 
 function scheduleVisibilityCheck() {
@@ -173,27 +186,32 @@ async function renderPage(idx: number) {
   }
 }
 
-// Wheel-Zoom mit Cursor als Fixpunkt
+// Mausrad: scrollen; mit Strg/Cmd: zoomen (Fixpunkt unter dem Cursor)
 function onWheel(e: WheelEvent) {
   e.preventDefault()
   const viewport = viewportRef.value
   if (!viewport) return
-  const rect = viewport.getBoundingClientRect()
-  const cursorX = e.clientX - rect.left
-  const cursorY = e.clientY - rect.top
 
-  // Zoomfaktor
-  const zoomFactor = Math.exp(-e.deltaY * 0.0015)
-  let newZoom = zoom.value * zoomFactor
-  newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom))
-  if (newZoom === zoom.value) return
+  if (e.ctrlKey || e.metaKey) {
+    const rect = viewport.getBoundingClientRect()
+    const cursorX = e.clientX - rect.left
+    const cursorY = e.clientY - rect.top
 
-  // Punkt unter Cursor bleibt fix
-  const ratio = newZoom / zoom.value
-  panX.value = cursorX - (cursorX - panX.value) * ratio
-  panY.value = cursorY - (cursorY - panY.value) * ratio
-  zoom.value = newZoom
+    const zoomFactor = Math.exp(-e.deltaY * 0.0015)
+    let newZoom = zoom.value * zoomFactor
+    newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom))
+    if (newZoom === zoom.value) return
 
+    const ratio = newZoom / zoom.value
+    panX.value = cursorX - (cursorX - panX.value) * ratio
+    panY.value = cursorY - (cursorY - panY.value) * ratio
+    zoom.value = newZoom
+  } else {
+    panX.value -= e.deltaX
+    panY.value -= e.deltaY
+  }
+
+  clampPanY()
   scheduleVisibilityCheck()
 }
 
@@ -212,6 +230,7 @@ function onPointerMove(e: PointerEvent) {
   if (!isPanning.value) return
   panX.value = panStart.panX + (e.clientX - panStart.x)
   panY.value = panStart.panY + (e.clientY - panStart.y)
+  clampPanY()
   scheduleVisibilityCheck()
 }
 
@@ -241,6 +260,7 @@ function zoomAt(factor: number) {
   panX.value = cx - (cx - panX.value) * ratio
   panY.value = cy - (cy - panY.value) * ratio
   zoom.value = newZoom
+  clampPanY()
   scheduleVisibilityCheck()
 }
 
@@ -281,22 +301,20 @@ watch([zoom, panX, panY], () => {
 </script>
 
 <template>
-  <Teleport to="body">
+  <div class="preview-root fixed inset-0 z-[100]">
+    <div class="preview-backdrop absolute inset-0 bg-black/85 backdrop-blur-[2px]" />
+
+    <!-- Viewport (volle Höhe) -->
     <div
-      class="fixed inset-0 bg-black/85 z-[100]"
-      @click.self="emit('close')"
+      ref="viewportRef"
+      class="preview-surface absolute inset-0 overflow-hidden select-none"
+      :class="isPanning ? 'cursor-grabbing' : 'cursor-grab'"
+      @wheel.prevent="onWheel"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerUp"
     >
-      <!-- Viewport (volle Höhe) -->
-      <div
-        ref="viewportRef"
-        class="absolute inset-0 overflow-hidden select-none"
-        :class="isPanning ? 'cursor-grabbing' : 'cursor-grab'"
-        @wheel.prevent="onWheel"
-        @pointerdown="onPointerDown"
-        @pointermove="onPointerMove"
-        @pointerup="onPointerUp"
-        @pointercancel="onPointerUp"
-      >
         <!-- Lade-Indikator -->
         <div
           v-if="loadingInitial"
@@ -324,7 +342,7 @@ watch([zoom, panX, panY], () => {
             width: layerDimensions.width + 'px',
             height: layerDimensions.height + 'px',
             transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
-            transition: isPanning ? 'none' : 'transform 0.08s linear',
+            transition: isPanning || loadingInitial ? 'none' : 'transform 0.08s linear',
           }"
         >
           <!-- Bild -->
@@ -377,27 +395,30 @@ watch([zoom, panX, panY], () => {
 
       </div>
 
-      <!-- Titel-Badge (links oben) -->
-      <div
-        class="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white text-xs max-w-[calc(50%-4rem)] pointer-events-none"
-      >
+    <!-- Titel-Badge (links oben) -->
+    <div
+      class="preview-chrome absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white text-xs max-w-[calc(50%-4rem)] pointer-events-none"
+    >
         <font-awesome-icon
           :icon="document.type === 'pdf' ? 'file-pdf' : 'file-image'"
           class="text-gray-300 flex-shrink-0 w-3 h-3"
         />
-        <span class="font-medium truncate">{{ document.name }}</span>
+        <span class="font-medium truncate" :title="document.name">{{ document.title || document.name }}</span>
+        <span v-if="document.correspondent" class="text-[10px] text-gray-300 truncate flex-shrink-0">
+          · {{ document.correspondent }}
+        </span>
         <span
           v-if="!isImage && pages.length > 0"
           class="text-[10px] text-gray-400 flex-shrink-0"
         >
           · {{ pages.length }} Seite{{ pages.length !== 1 ? 'n' : '' }}
         </span>
-      </div>
+    </div>
 
-      <!-- Bedienelemente (rechts oben) -->
-      <div
-        class="absolute top-3 right-3 flex items-center gap-1 px-1.5 py-1 rounded-full bg-black/55 backdrop-blur-sm text-white"
-      >
+    <!-- Bedienelemente (rechts oben) -->
+    <div
+      class="preview-chrome absolute top-3 right-3 flex items-center gap-1 px-1.5 py-1 rounded-full bg-black/55 backdrop-blur-sm text-white"
+    >
         <button
           class="w-8 h-8 rounded-full hover:bg-white/15 flex items-center justify-center transition-colors"
           title="Herauszoomen"
@@ -425,21 +446,27 @@ watch([zoom, panX, panY], () => {
         <div class="w-px h-4 bg-white/20 mx-1" />
         <button
           class="w-8 h-8 rounded-full hover:bg-white/15 flex items-center justify-center transition-colors"
+          title="Eckdaten bearbeiten"
+          @click="emit('edit')"
+        >
+          <font-awesome-icon icon="pen" class="w-3.5 h-3.5" />
+        </button>
+        <button
+          class="w-8 h-8 rounded-full hover:bg-white/15 flex items-center justify-center transition-colors"
           title="Schließen (Esc)"
           @click="emit('close')"
         >
           <font-awesome-icon icon="xmark" class="w-3.5 h-3.5" />
         </button>
-      </div>
-
-      <!-- Hinweis (unten mittig) -->
-      <div
-        v-if="!loadingInitial && !loadError"
-        class="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white/80 text-[11px] flex items-center gap-2 pointer-events-none"
-      >
-        <font-awesome-icon icon="hand" class="w-3 h-3" />
-        Ziehen zum Verschieben · Mausrad zum Zoomen
-      </div>
     </div>
-  </Teleport>
+
+    <!-- Hinweis (unten mittig) -->
+    <div
+      v-if="!loadingInitial && !loadError"
+      class="preview-chrome absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white/80 text-[11px] flex items-center gap-2 pointer-events-none"
+    >
+      <font-awesome-icon icon="hand" class="w-3 h-3" />
+      Ziehen zum Verschieben · Mausrad zum Scrollen · Strg + Mausrad zum Zoomen
+    </div>
+  </div>
 </template>

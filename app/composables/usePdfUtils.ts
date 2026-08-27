@@ -205,6 +205,54 @@ export function usePdfUtils() {
     }
   }
 
+  async function appendDocument(doc: DocumentFile, mergedPdf: PDFDocument): Promise<void> {
+    const fileBytes = await doc.file.arrayBuffer()
+
+    if (doc.type === 'pdf') {
+      if (doc.locked) {
+        // Noch nicht entsperrt – nicht exportierbar. Überspringen statt Crash.
+        console.warn(`Dokument "${doc.name}" ist noch passwortgeschützt und wird übersprungen.`)
+        return
+      }
+      if (doc.encrypted) {
+        // Verschlüsselte PDFs (z. B. STRATO-Rechnungen) kann pdf-lib nicht entschlüsselt
+        // weitergeben – copyPages würde die chiffrierten Streams 1:1 in das unverschlüsselte
+        // Ziel-PDF kopieren, was Acrobat mit "Eingebettete Schrift konnte nicht entnommen
+        // werden" quittiert und Seiten leer lässt. Wir rastern diese PDFs stattdessen über
+        // pdf.js, das die Entschlüsselung beherrscht.
+        await rasterizeIntoMergedPdf(doc.file, mergedPdf, doc.password)
+        return
+      }
+      const sourcePdf = await PDFDocument.load(fileBytes, { ignoreEncryption: true })
+      const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices())
+      pages.forEach(page => mergedPdf.addPage(page))
+      return
+    }
+
+    let image
+    if (doc.file.type === 'image/jpeg' || doc.file.type === 'image/jpg') {
+      image = await mergedPdf.embedJpg(fileBytes)
+    } else if (doc.file.type === 'image/png') {
+      image = await mergedPdf.embedPng(fileBytes)
+    } else {
+      return
+    }
+
+    const maxWidth = 595.28
+    const maxHeight = 841.89
+    const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1)
+    const width = image.width * scale
+    const height = image.height * scale
+
+    const page = mergedPdf.addPage([maxWidth, maxHeight])
+    page.drawImage(image, {
+      x: (maxWidth - width) / 2,
+      y: (maxHeight - height) / 2,
+      width,
+      height,
+    })
+  }
+
   async function exportBsp(
     sortedBookings: Booking[],
     getDocumentFile: (id: string) => DocumentFile | undefined,
@@ -212,53 +260,10 @@ export function usePdfUtils() {
     const mergedPdf = await PDFDocument.create()
 
     for (const booking of sortedBookings) {
-      if (!booking.documentId) continue
-      const doc = getDocumentFile(booking.documentId)
-      if (!doc) continue
-
-      const fileBytes = await doc.file.arrayBuffer()
-
-      if (doc.type === 'pdf') {
-        if (doc.locked) {
-          // Noch nicht entsperrt – nicht exportierbar. Überspringen statt Crash.
-          console.warn(`Dokument "${doc.name}" ist noch passwortgeschützt und wird übersprungen.`)
-          continue
-        }
-        if (doc.encrypted) {
-          // Verschlüsselte PDFs (z. B. STRATO-Rechnungen) kann pdf-lib nicht entschlüsselt
-          // weitergeben – copyPages würde die chiffrierten Streams 1:1 in das unverschlüsselte
-          // Ziel-PDF kopieren, was Acrobat mit "Eingebettete Schrift konnte nicht entnommen
-          // werden" quittiert und Seiten leer lässt. Wir rastern diese PDFs stattdessen über
-          // pdf.js, das die Entschlüsselung beherrscht.
-          await rasterizeIntoMergedPdf(doc.file, mergedPdf, doc.password)
-        } else {
-          const sourcePdf = await PDFDocument.load(fileBytes, { ignoreEncryption: true })
-          const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices())
-          pages.forEach(page => mergedPdf.addPage(page))
-        }
-      } else {
-        let image
-        if (doc.file.type === 'image/jpeg' || doc.file.type === 'image/jpg') {
-          image = await mergedPdf.embedJpg(fileBytes)
-        } else if (doc.file.type === 'image/png') {
-          image = await mergedPdf.embedPng(fileBytes)
-        } else {
-          continue
-        }
-
-        const maxWidth = 595.28
-        const maxHeight = 841.89
-        const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1)
-        const width = image.width * scale
-        const height = image.height * scale
-
-        const page = mergedPdf.addPage([maxWidth, maxHeight])
-        page.drawImage(image, {
-          x: (maxWidth - width) / 2,
-          y: (maxHeight - height) / 2,
-          width,
-          height,
-        })
+      for (const documentId of booking.documentIds) {
+        const doc = getDocumentFile(documentId)
+        if (!doc) continue
+        await appendDocument(doc, mergedPdf)
       }
     }
 

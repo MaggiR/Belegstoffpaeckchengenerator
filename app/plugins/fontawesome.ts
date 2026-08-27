@@ -47,6 +47,14 @@ import {
   faLock,
   faLockOpen,
   faKey,
+  faGear,
+  faRotateRight,
+  faBuilding,
+  faCalendarDay,
+  faEuroSign,
+  faLayerGroup,
+  faCircleInfo,
+  faBrain,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -96,6 +104,14 @@ library.add(
   faLock,
   faLockOpen,
   faKey,
+  faGear,
+  faRotateRight,
+  faBuilding,
+  faCalendarDay,
+  faEuroSign,
+  faLayerGroup,
+  faCircleInfo,
+  faBrain,
 )
 
 export default defineNuxtPlugin((nuxtApp) => {

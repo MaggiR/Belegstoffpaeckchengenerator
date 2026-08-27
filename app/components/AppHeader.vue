@@ -1,6 +1,7 @@
 <script setup lang="ts">
 const { isDark, toggle } = useDarkMode()
-const { activeView } = useAppState()
+const { activeView, showSettings } = useAppState()
+const { providerLabel } = useLlmSettings()
 const { saveState } = usePersistence()
 
 function goToOverview() {
@@ -31,6 +32,13 @@ function goToOverview() {
       </div>
 
       <div class="flex items-center gap-2">
+        <button
+          class="p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          :title="`Beleganalyse einrichten (${providerLabel})`"
+          @click="showSettings = true"
+        >
+          <font-awesome-icon icon="gear" class="w-4 h-4" />
+        </button>
         <button
           class="p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           :title="isDark ? 'Helles Design' : 'Dunkles Design'"

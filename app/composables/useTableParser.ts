@@ -111,7 +111,7 @@ export function useTableParser() {
           amount,
           description: mapping.description ? (row[mapping.description] || '').trim() : '',
           remarks: mapping.remarks ? (row[mapping.remarks] || '').trim() : '',
-          documentId: null,
+          documentIds: [],
           noDocRequired: amount > 0,
           verified: false,
         }

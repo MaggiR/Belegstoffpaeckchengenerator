@@ -1,7 +1,8 @@
 <script setup lang="ts">
 const { init } = useDarkMode()
-const { currentStep, activeView, currentBspId } = useAppState()
+const { currentStep, activeView, currentBspId, showSettings } = useAppState()
 const { loadInitial, startWatching, switchToBsp } = usePersistence()
+const { load: loadLlmSettings } = useLlmSettings()
 
 const restored = ref(false)
 let suppressHistory = false
@@ -52,6 +53,7 @@ async function handlePopState(event: PopStateEvent) {
 
 onMounted(async () => {
   init()
+  loadLlmSettings()
   await loadInitial()
   restored.value = true
   replaceState()
@@ -108,6 +110,12 @@ onUnmounted(() => {
         >FDP Darmstadt</a>
       </p>
     </footer>
+
+    <Teleport to="body">
+      <Transition name="modal">
+        <SettingsModal v-if="showSettings" @close="showSettings = false" />
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -132,21 +140,93 @@ body {
   transform: translateY(-8px);
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Modals: der abgedunkelte Hintergrund blendet auf, das Panel fährt leicht hoch. */
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 0.22s ease;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+.modal-enter-active .modal-panel,
+.modal-leave-active .modal-panel {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
 }
 
-::-webkit-scrollbar-thumb {
-  background: #d1d5db;
-  border-radius: 3px;
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
 }
 
-.dark ::-webkit-scrollbar-thumb {
-  background: #374151;
+.modal-enter-from .modal-panel,
+.modal-leave-to .modal-panel {
+  opacity: 0;
+  transform: translateY(12px) scale(0.96);
+}
+
+/* Aufklappende Menüs, etwa Filter und Sortierung in der Belege-Spalte. */
+.popover-enter-active,
+.popover-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  transform-origin: top right;
+}
+
+.popover-enter-from,
+.popover-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.97);
+}
+
+/* Vollbild-Vorschau für Belege: sanftes Ein- und Ausblenden. */
+.preview-enter-active,
+.preview-leave-active {
+  transition: opacity 0.28s ease;
+}
+
+.preview-enter-active .preview-backdrop,
+.preview-leave-active .preview-backdrop {
+  transition: opacity 0.28s ease, backdrop-filter 0.28s ease;
+}
+
+.preview-enter-active .preview-surface,
+.preview-leave-active .preview-surface,
+.preview-enter-active .preview-chrome,
+.preview-leave-active .preview-chrome {
+  transition: opacity 0.28s ease;
+}
+
+.preview-enter-from,
+.preview-leave-to {
+  opacity: 0;
+}
+
+.preview-enter-from .preview-backdrop,
+.preview-leave-to .preview-backdrop {
+  opacity: 0;
+  backdrop-filter: blur(0);
+}
+
+.preview-enter-from .preview-surface,
+.preview-leave-to .preview-surface,
+.preview-enter-from .preview-chrome,
+.preview-leave-to .preview-chrome {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-enter-active,
+  .modal-leave-active,
+  .modal-enter-active .modal-panel,
+  .modal-leave-active .modal-panel,
+  .popover-enter-active,
+  .popover-leave-active,
+  .preview-enter-active,
+  .preview-leave-active,
+  .preview-enter-active .preview-backdrop,
+  .preview-leave-active .preview-backdrop,
+  .preview-enter-active .preview-surface,
+  .preview-leave-active .preview-surface,
+  .preview-enter-active .preview-chrome,
+  .preview-leave-active .preview-chrome {
+    transition-duration: 0.01ms;
+  }
 }
 </style>

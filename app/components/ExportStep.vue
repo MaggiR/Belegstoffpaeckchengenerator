@@ -4,6 +4,8 @@ const {
   bookings,
   stats,
   getDocument,
+  currentBspId,
+  bspList,
 } = useAppState()
 
 const { exportBsp } = usePdfUtils()
@@ -18,9 +20,20 @@ function startNew() {
   createNewBsp()
 }
 
+function buildExportFileName(): string {
+  const meta = bspList.value.find(b => b.id === currentBspId.value)
+  const raw = meta?.name?.trim() || ''
+  const sanitized = raw
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const base = sanitized || `Belegstoffpaeckchen_${new Date().toISOString().split('T')[0]}`
+  return `${base}.pdf`
+}
+
 const sortedBookingsWithDocs = computed(() =>
   [...bookings.value]
-    .filter(b => b.documentId)
+    .filter(b => b.documentIds.length > 0)
     .sort((a, b) => {
       const da = a.date?.getTime() ?? 0
       const db = b.date?.getTime() ?? 0
@@ -38,7 +51,7 @@ async function download() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `Belegstoffpaeckchen_${new Date().toISOString().split('T')[0]}.pdf`
+    a.download = buildExportFileName()
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -66,8 +79,8 @@ async function download() {
           <p class="text-3xl font-bold text-gray-900 dark:text-white">{{ stats.total }}</p>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Buchungen</p>
         </div>
-        <div class="bg-green-50 dark:bg-green-900/20 rounded-xl p-4">
-          <p class="text-3xl font-bold text-green-600 dark:text-green-400">{{ stats.withDoc }}</p>
+        <div class="bg-emerald-50/60 dark:bg-emerald-900/10 rounded-xl p-4">
+          <p class="text-3xl font-bold text-emerald-500 dark:text-emerald-300">{{ stats.withDoc }}</p>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Mit Beleg</p>
         </div>
         <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-4">
@@ -101,11 +114,11 @@ async function download() {
       <!-- Erfolg -->
       <div
         v-if="exportDone"
-        class="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4 mb-6"
+        class="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl p-4 mb-6"
       >
         <div class="flex items-center justify-center gap-2">
-          <font-awesome-icon icon="circle-check" class="text-green-500" />
-          <span class="text-sm font-medium text-green-800 dark:text-green-300">
+          <font-awesome-icon icon="circle-check" class="text-emerald-500" />
+          <span class="text-sm font-medium text-emerald-800 dark:text-emerald-300">
             PDF wurde erfolgreich heruntergeladen!
           </span>
         </div>

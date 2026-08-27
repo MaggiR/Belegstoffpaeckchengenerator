@@ -1,0 +1,252 @@
+<script setup lang="ts">
+import type { LlmProvider, ReasoningEffort } from '~/types'
+import type { ConnectionTestResult } from '~/composables/useLlmSettings'
+
+const emit = defineEmits<{
+  'close': []
+}>()
+
+const { settings, save, testConnection, defaultSettings } = useLlmSettings()
+
+// Auf einer Kopie arbeiten, damit Abbrechen die bisherige Konfiguration behält.
+const draft = ref({ ...settings.value })
+
+const testing = ref(false)
+const testResult = ref<ConnectionTestResult | null>(null)
+const showKey = ref(false)
+
+const providers: Array<{ value: LlmProvider; label: string; hint: string }> = [
+  { value: 'none', label: 'Keine Analyse', hint: 'Belege werden nur per Texterkennung gelesen' },
+  { value: 'ollama', label: 'Ollama', hint: 'Lokal oder im eigenen Netz gehostet' },
+  { value: 'openai', label: 'OpenAI', hint: 'Cloud-API, benötigt einen API-Key' },
+]
+
+const efforts: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high']
+
+function selectProvider(provider: LlmProvider) {
+  draft.value.provider = provider
+  testResult.value = null
+}
+
+async function runTest() {
+  testing.value = true
+  testResult.value = null
+  try {
+    testResult.value = await testConnection(draft.value)
+  } finally {
+    testing.value = false
+  }
+}
+
+function applyAndClose() {
+  save({ ...draft.value })
+  emit('close')
+}
+
+function resetDraft() {
+  draft.value = defaultSettings()
+  testResult.value = null
+}
+</script>
+
+<template>
+  <div
+    class="fixed inset-0 bg-gray-900/40 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center z-[110] p-4"
+    @click.self="emit('close')"
+  >
+    <div class="modal-panel bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+        <!-- Kopf -->
+        <div class="px-6 pt-5 pb-4 border-b border-gray-200 dark:border-gray-700 flex items-start justify-between gap-4">
+          <div>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              <font-awesome-icon icon="gear" class="text-primary-500 w-4 h-4" />
+              Beleganalyse
+            </h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Legt fest, welches Sprachmodell Titel, Korrespondent, Datum und Betrag aus Belegen ausliest.
+            </p>
+          </div>
+          <button
+            class="p-2 -mt-1 -mr-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            title="Schließen"
+            @click="emit('close')"
+          >
+            <font-awesome-icon icon="xmark" class="w-4 h-4" />
+          </button>
+        </div>
+
+        <div class="px-6 py-5 overflow-auto space-y-5">
+          <!-- Providerauswahl -->
+          <div class="space-y-2">
+            <label class="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Anbieter
+            </label>
+            <div class="grid gap-2">
+              <button
+                v-for="option in providers"
+                :key="option.value"
+                class="text-left px-3 py-2.5 rounded-xl border-2 transition-colors"
+                :class="draft.provider === option.value
+                  ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                  : 'border-gray-200 dark:border-gray-700 hover:border-primary-300 dark:hover:border-primary-600'"
+                @click="selectProvider(option.value)"
+              >
+                <span
+                  class="text-sm font-medium"
+                  :class="draft.provider === option.value
+                    ? 'text-primary-700 dark:text-primary-300'
+                    : 'text-gray-900 dark:text-white'"
+                >
+                  {{ option.label }}
+                </span>
+                <span class="block text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                  {{ option.hint }}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Ollama -->
+          <div v-if="draft.provider === 'ollama'" class="space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Ollama-URL</label>
+              <input
+                v-model="draft.ollamaBaseUrl"
+                type="url"
+                placeholder="http://localhost:11434"
+                class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Modell</label>
+              <input
+                v-model="draft.ollamaModel"
+                type="text"
+                placeholder="gemma-4-E4B"
+                class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+              <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                Das Modell muss Bilder verarbeiten können, da die ersten zwei Belegseiten mitgesendet werden.
+              </p>
+            </div>
+            <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 flex items-start gap-2">
+              <font-awesome-icon icon="circle-info" class="text-amber-500 w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+              <p class="text-[11px] text-amber-700 dark:text-amber-300">
+                Ollama muss Anfragen aus dem Browser erlauben. Dafür auf dem Ollama-Host
+                <code class="font-mono">OLLAMA_ORIGINS=*</code> setzen, sonst blockiert CORS die Analyse.
+              </p>
+            </div>
+          </div>
+
+          <!-- OpenAI -->
+          <div v-else-if="draft.provider === 'openai'" class="space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">API-Key</label>
+              <div class="relative">
+                <input
+                  v-model="draft.openaiApiKey"
+                  :type="showKey ? 'text' : 'password'"
+                  placeholder="sk-…"
+                  autocomplete="off"
+                  class="w-full px-3 py-2 pr-10 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono"
+                >
+                <button
+                  class="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                  :title="showKey ? 'Key verbergen' : 'Key anzeigen'"
+                  @click="showKey = !showKey"
+                >
+                  <font-awesome-icon icon="eye" class="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Modell</label>
+              <input
+                v-model="draft.openaiModel"
+                type="text"
+                placeholder="gpt-5-luna"
+                class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Reasoning-Aufwand</label>
+              <div class="flex bg-gray-100 dark:bg-gray-900 rounded-lg p-0.5">
+                <button
+                  v-for="effort in efforts"
+                  :key="effort"
+                  class="flex-1 px-2 py-1 rounded-md text-xs font-medium transition-all capitalize"
+                  :class="draft.openaiReasoningEffort === effort
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400'"
+                  @click="draft.openaiReasoningEffort = effort"
+                >
+                  {{ effort }}
+                </button>
+              </div>
+            </div>
+            <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 flex items-start gap-2">
+              <font-awesome-icon icon="circle-info" class="text-amber-500 w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+              <p class="text-[11px] text-amber-700 dark:text-amber-300">
+                Der Key wird nur in diesem Browser gespeichert. Da die App ohne Server läuft, ist er im
+                Browser-Speicher einsehbar.
+              </p>
+            </div>
+          </div>
+
+          <p v-else class="text-xs text-gray-500 dark:text-gray-400">
+            Ohne Anbieter erhalten neue Belege den Dateinamen als Titel. Die Analyse lässt sich später
+            jederzeit nachholen.
+          </p>
+
+          <!-- Verbindungstest -->
+          <div v-if="draft.provider !== 'none'" class="space-y-2">
+            <button
+              class="px-3 py-2 text-xs font-medium rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center gap-2 disabled:opacity-60"
+              :disabled="testing"
+              @click="runTest"
+            >
+              <font-awesome-icon :icon="testing ? 'spinner' : 'brain'" :class="testing ? 'animate-spin' : ''" class="w-3.5 h-3.5" />
+              {{ testing ? 'Wird geprüft…' : 'Verbindung testen' }}
+            </button>
+            <div
+              v-if="testResult"
+              class="rounded-lg px-3 py-2 text-[11px] flex items-start gap-2"
+              :class="testResult.ok
+                ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
+                : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300'"
+            >
+              <font-awesome-icon
+                :icon="testResult.ok ? 'circle-check' : 'triangle-exclamation'"
+                class="w-3.5 h-3.5 mt-0.5 flex-shrink-0"
+              />
+              <span>{{ testResult.message }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fuß -->
+        <div class="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2">
+          <button
+            class="text-[11px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            @click="resetDraft"
+          >
+            Auf Standard zurücksetzen
+          </button>
+          <div class="flex items-center gap-2">
+            <button
+              class="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              @click="emit('close')"
+            >
+              Abbrechen
+            </button>
+            <button
+              class="px-4 py-2 text-sm rounded-lg bg-primary-500 text-white hover:bg-primary-600 transition-colors font-medium"
+              @click="applyAndClose"
+            >
+              Speichern
+            </button>
+          </div>
+        </div>
+      </div>
+  </div>
+</template>
