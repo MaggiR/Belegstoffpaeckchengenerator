@@ -1,8 +1,13 @@
 import type { DocumentExtraction, DocumentFile, LlmProvider, LlmSettings } from '~/types'
 import { parseDocumentKind } from '~/types'
 
-/** Vision-Modelle brauchen auf CPU-Hardware leicht mehrere Minuten pro Beleg. */
-const REQUEST_TIMEOUT_MS = 240_000
+/**
+ * Vision-Modelle brauchen auf CPU-Hardware leicht mehrere Minuten pro Beleg,
+ * und der erste Beleg zahlt zusätzlich die Ladezeit des Modells. Der Wert liegt
+ * knapp unter dem `proxy_read_timeout` der nginx.conf (300 s): so bricht der
+ * Browser zuerst ab und zeigt seine Meldung statt eines Proxy-504.
+ */
+const REQUEST_TIMEOUT_MS = 270_000
 const MAX_PAGE_IMAGES = 8
 /** Zielhöhe für gerenderte PDF-Seiten (Breite proportional). Entspricht Bild-Belegen. */
 const PAGE_RENDER_HEIGHT = 1980
@@ -74,14 +79,15 @@ let batchPrecount = 0
 /**
  * Gleichzeitige Beleganalysen je Anbieter.
  *
- * Der Ollama-Wert muss zu OLLAMA_NUM_PARALLEL des Servers passen (dort: 2).
- * Mehr Anfragen als Slots bringen keinen Durchsatz, sondern warten in der
- * Warteschlange – während ihr Timeout schon läuft. Genau daran scheiterte
- * zuvor fast ein ganzer Stapel, obwohl der Server gesund war.
+ * Der Ollama-Wert darf OLLAMA_NUM_PARALLEL des Servers nicht überschreiten
+ * (dort: 2). Überzählige Anfragen bringen keinen Durchsatz, sondern warten in
+ * der Warteschlange von Ollama. Da wir mit `stream: false` arbeiten, fließt
+ * bis zum Ende der Generierung kein einziges Byte – ein Proxy davor sieht
+ * also Wartezeit plus Rechenzeit als eine einzige Lesepause und bricht ab.
  * OpenAI verträgt dagegen mehrere Anfragen gleichzeitig.
  */
 const MAX_CONCURRENT_EXTRACTIONS: Record<LlmProvider, number> = {
-  ollama: 10,
+  ollama: 6,
   openai: 4,
 }
 
