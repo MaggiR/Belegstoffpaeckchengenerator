@@ -2,11 +2,14 @@ import type { LlmSettings } from '~/types'
 
 const STORAGE_KEY = 'bsp-llm-settings'
 
+type OllamaRoute = 'direct' | 'proxy'
+
 function defaultSettings(): LlmSettings {
   return {
     provider: 'none',
-    ollamaBaseUrl: 'http://localhost:11434',
+    ollamaBaseUrl: 'http://192.168.178.187:11434',
     ollamaModel: 'gemma-4-E4B',
+    ollamaBearerToken: '',
     openaiApiKey: '',
     openaiModel: 'gpt-5-luna',
     openaiReasoningEffort: 'medium',
@@ -15,20 +18,73 @@ function defaultSettings(): LlmSettings {
 
 const settings = ref<LlmSettings>(defaultSettings())
 let hydrated = false
+/** Welche Route zuletzt funktioniert hat – Direct zuerst, Proxy nur als Fallback. */
+const ollamaRoute = ref<OllamaRoute | null>(null)
 
 export interface ConnectionTestResult {
   ok: boolean
   message: string
 }
 
+export interface OllamaModelListResult {
+  ok: boolean
+  models: string[]
+  message?: string
+}
+
+function parseOllamaModelNames(data: unknown): string[] {
+  const models = (data as { models?: Array<{ name?: string }> })?.models ?? []
+  const names = models.map(m => String(m?.name ?? '').trim()).filter(Boolean)
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b, 'de'))
+}
+
+export function ollamaModelIsListed(models: string[], model: string): boolean {
+  const wanted = model.trim().toLowerCase()
+  if (!wanted) return false
+  return models.some((name) => {
+    const n = name.toLowerCase()
+    return n === wanted || n.split(':')[0] === wanted.split(':')[0]
+  })
+}
+
+export function pickOllamaModel(models: string[], current: string): string {
+  if (!models.length) return ''
+  const wanted = current.trim().toLowerCase()
+  const exact = models.find(name => name.toLowerCase() === wanted)
+  if (exact) return exact
+  const byPrefix = models.find(name => name.toLowerCase().split(':')[0] === wanted.split(':')[0])
+  if (byPrefix) return byPrefix
+  return models[0]
+}
+
+export async function listOllamaModels(base: string, token = ''): Promise<OllamaModelListResult> {
+  const configured = normalizeBaseUrl(base)
+  if (!configured) return { ok: false, models: [], message: 'Bitte eine Ollama-URL angeben.' }
+
+  try {
+    const res = await fetchOllama(configured, '/api/tags', {}, token)
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, models: [], message: `Ollama hat den Bearer-Token abgelehnt (HTTP ${res.status}).` }
+    }
+    if (!res.ok) {
+      if (res.status === 502 || res.status === 504) {
+        return { ok: false, models: [], message: describeOllamaFetchFailure(configured, 'get') }
+      }
+      return { ok: false, models: [], message: `Ollama antwortete mit HTTP ${res.status}.` }
+    }
+    const contentType = res.headers.get('content-type') ?? ''
+    if (!contentType.includes('json')) {
+      return { ok: false, models: [], message: 'Unerwartete Antwort von Ollama (kein JSON).' }
+    }
+    return { ok: true, models: parseOllamaModelNames(await res.json()) }
+  } catch {
+    return { ok: false, models: [], message: describeOllamaFetchFailure(configured, 'get') }
+  }
+}
+
 /** Entfernt einen abschließenden Slash, damit Pfade eindeutig zusammengesetzt werden. */
 export function normalizeBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
-}
-
-/** Relative Pfade (/ollama) bleiben same-origin; absolute URLs unverändert. */
-export function resolveOllamaBaseUrl(base: string): string {
-  return normalizeBaseUrl(base)
 }
 
 function isHttpsPage(): boolean {
@@ -43,49 +99,127 @@ function isHttpUrl(url: string): boolean {
   }
 }
 
-function isPrivateNetworkHost(hostname: string): boolean {
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return true
-  if (/^192\.168\./.test(hostname)) return true
-  if (/^10\./.test(hostname)) return true
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true
-  return false
-}
-
-function ollamaUrlHostname(url: string): string | null {
-  if (url.startsWith('/')) return null
+function parseHttpOrigin(url: string): URL | null {
+  const normalized = normalizeBaseUrl(url)
+  if (!normalized || normalized.startsWith('/')) return null
   try {
-    return new URL(url).hostname
+    const parsed = new URL(normalized)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    if (parsed.username || parsed.password) return null
+    return parsed
   } catch {
     return null
   }
+}
+
+function withPath(base: string, path: string): string {
+  return `${normalizeBaseUrl(base)}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function isUsableOllamaResponse(res: Response): boolean {
+  if (!res.ok) return false
+  const contentType = res.headers.get('content-type') ?? ''
+  return contentType.includes('json')
+}
+
+function bearerValue(token?: string): string {
+  const trimmed = (token ?? '').trim()
+  if (!trimmed) return ''
+  return trimmed.toLowerCase().startsWith('bearer ') ? trimmed.slice(7).trim() : trimmed
+}
+
+export function ollamaAuthHeaders(token: string, extra?: HeadersInit): HeadersInit {
+  const headers = new Headers(extra)
+  const value = bearerValue(token)
+  if (value) headers.set('Authorization', `Bearer ${value}`)
+  return headers
+}
+
+function rememberOllamaRoute(route: OllamaRoute) {
+  ollamaRoute.value = route
+}
+
+/**
+ * Mit Bearer zuerst über den App-Proxy: Auth-Proxies (z. B. OpenResty) lehnen
+ * die CORS-Vorabanfrage ohne Token ab, curl funktioniert trotzdem.
+ * Ohne Bearer zuerst Direktzugriff, Proxy nur als Fallback.
+ */
+export async function fetchOllama(
+  base: string,
+  path: string,
+  init: RequestInit = {},
+  token = '',
+): Promise<Response> {
+  const normalized = normalizeBaseUrl(base)
+  if (!normalized) throw new TypeError('Keine Ollama-URL angegeben')
+
+  const { headers: extraHeaders, ...rest } = init
+  const authHeaders = ollamaAuthHeaders(token, extraHeaders)
+
+  if (normalized.startsWith('/')) {
+    return fetch(withPath(normalized, path), { ...rest, headers: authHeaders })
+  }
+
+  const origin = parseHttpOrigin(normalized)
+  if (!origin) {
+    return fetch(withPath(normalized, path), { ...rest, headers: authHeaders })
+  }
+
+  const directUrl = withPath(origin.origin, path)
+  const proxyUrl = withPath('/ollama', path)
+  const hasToken = !!bearerValue(token)
+  const preferProxy = ollamaRoute.value === 'proxy' || (ollamaRoute.value === null && hasToken)
+
+  async function viaProxy(): Promise<Response> {
+    const headers = new Headers(authHeaders)
+    headers.set('X-Ollama-Upstream', origin.origin)
+    const res = await fetch(proxyUrl, { ...rest, headers })
+    if (isUsableOllamaResponse(res) || (res.ok && res.status < 500)) rememberOllamaRoute('proxy')
+    return res
+  }
+
+  async function viaDirect(): Promise<Response> {
+    const res = await fetch(directUrl, { ...rest, headers: authHeaders })
+    if (isUsableOllamaResponse(res) || (res.ok && res.status < 500)) rememberOllamaRoute('direct')
+    return res
+  }
+
+  if (preferProxy) {
+    try {
+      const proxied = await viaProxy()
+      if (isUsableOllamaResponse(proxied) || proxied.status < 500) return proxied
+    } catch {
+      ollamaRoute.value = null
+    }
+    return viaDirect()
+  }
+
+  try {
+    const direct = await viaDirect()
+    if (direct.status < 500) return direct
+  } catch {
+    // Direktzugriff blockiert (CORS, Mixed Content, PNA) → Proxy.
+  }
+
+  return viaProxy()
 }
 
 /**
  * Browser-Netzwerkfehler (TypeError/NetworkError) einordnen. Der Browser gibt
  * Mixed Content, Private Network Access und CORS oft nur als NetworkError preis.
  */
-export function describeOllamaFetchFailure(target: string, phase: 'get' | 'post' = 'get'): string {
-  const pageOrigin = typeof location !== 'undefined' ? location.origin : ''
-  const pageHost = typeof location !== 'undefined' ? location.hostname : ''
-
-  if (target.startsWith('/')) {
-    return `${target} antwortet nicht korrekt. Ist OLLAMA_UPSTREAM gesetzt und der Container neu gestartet? Ohne Proxy liefert nginx die App-Seite statt Ollama-JSON.`
-  }
+export function describeOllamaFetchFailure(configuredUrl: string, phase: 'get' | 'post' = 'get'): string {
+  const target = normalizeBaseUrl(configuredUrl)
 
   if (isHttpsPage() && isHttpUrl(target)) {
-    return `${target} ist per HTTP erreichbar, diese Seite läuft aber über HTTPS. Der Browser blockiert das als unsicheren Inhalt (Mixed Content). Ollama hinter HTTPS bereitstellen oder in den Einstellungen die Proxy-URL /ollama nutzen.`
-  }
-
-  const ollamaHost = ollamaUrlHostname(target)
-  if (ollamaHost && isPrivateNetworkHost(ollamaHost) && pageHost && !isPrivateNetworkHost(pageHost)) {
-    return `Der Browser blockiert direkte Aufrufe von „${pageOrigin}“ zu privaten Adressen wie ${target} (Private Network Access). Statt der LAN-IP /ollama eintragen und auf dem Server OLLAMA_UPSTREAM setzen – oder OpenAI nutzen.`
+    return `${target} ist per HTTP erreichbar, diese Seite läuft aber über HTTPS. Der Browser blockiert den Direktzugriff; der App-Proxy konnte Ollama ebenfalls nicht erreichen.`
   }
 
   if (phase === 'post') {
-    return `Ollama blockiert Schreibanfragen aus dem Browser. Auf dem Ollama-Host OLLAMA_ORIGINS setzen, etwa OLLAMA_ORIGINS=*, und den Dienst neu starten.`
+    return `Weder Direktzugriff noch App-Proxy erreichen Ollama unter ${target} für Schreibanfragen.`
   }
 
-  return `${target} war nicht erreichbar. Prüfe Host, Port, Firewall und ob Ollama lauscht (OLLAMA_HOST=0.0.0.0:11434).`
+  return `Weder Direktzugriff noch App-Proxy erreichen Ollama unter ${target}. Liegt ein Auth-Proxy davor, muss OPTIONS ohne Token erlaubt sein – oder der App-Proxy muss die Ziel-URL erreichen können.`
 }
 
 export function useLlmSettings() {
@@ -103,7 +237,12 @@ export function useLlmSettings() {
   }
 
   function save(next?: LlmSettings): void {
-    if (next) settings.value = { ...next }
+    if (next) {
+      if (normalizeBaseUrl(next.ollamaBaseUrl) !== normalizeBaseUrl(settings.value.ollamaBaseUrl)) {
+        ollamaRoute.value = null
+      }
+      settings.value = { ...next }
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(settings.value))
     } catch (e) {
@@ -113,7 +252,7 @@ export function useLlmSettings() {
 
   const isConfigured = computed(() => {
     const s = settings.value
-    if (s.provider === 'ollama') return resolveOllamaBaseUrl(s.ollamaBaseUrl).length > 0 && s.ollamaModel.trim().length > 0
+    if (s.provider === 'ollama') return normalizeBaseUrl(s.ollamaBaseUrl).length > 0 && s.ollamaModel.trim().length > 0
     if (s.provider === 'openai') return s.openaiApiKey.trim().length > 0 && s.openaiModel.trim().length > 0
     return false
   })
@@ -132,37 +271,18 @@ export function useLlmSettings() {
 
     try {
       if (candidate.provider === 'ollama') {
-        const base = resolveOllamaBaseUrl(candidate.ollamaBaseUrl)
-        if (!base) return { ok: false, message: 'Bitte eine Ollama-URL angeben.' }
+        const configured = normalizeBaseUrl(candidate.ollamaBaseUrl)
+        if (!configured) return { ok: false, message: 'Bitte eine Ollama-URL angeben.' }
+        const token = candidate.ollamaBearerToken ?? ''
+        ollamaRoute.value = null
 
-        const res = await fetch(`${base}/api/tags`)
-        if (!res.ok) {
-          if (base.startsWith('/') && (res.status === 502 || res.status === 504)) {
-            return {
-              ok: false,
-              message: `Ollama-Proxy unter ${base} erreicht kein Ollama (${res.status}). Prüfe: (1) Ollama läuft auf dem in .env gesetzten OLLAMA_UPSTREAM, (2) dort OLLAMA_HOST=0.0.0.0:11434, (3) nach .env-Änderung „docker compose up -d“ ausführen.`,
-            }
-          }
-          return { ok: false, message: `Ollama antwortete mit HTTP ${res.status}.` }
+        const listed = await listOllamaModels(configured, token)
+        if (!listed.ok) {
+          return { ok: false, message: listed.message ?? 'Ollama war nicht erreichbar.' }
         }
-        const contentType = res.headers.get('content-type') ?? ''
-        if (!contentType.includes('json')) {
-          return {
-            ok: false,
-            message: base.startsWith('/')
-              ? `Unter ${base} kam keine Ollama-Antwort (kein JSON). OLLAMA_UPSTREAM setzen, Container neu starten und URL „/ollama“ verwenden.`
-              : `Unerwartete Antwort von ${base} (kein JSON).`,
-          }
-        }
-        const data = await res.json()
-        const models: string[] = (data?.models ?? []).map((m: any) => String(m?.name ?? ''))
+        const models = listed.models
         const model = candidate.ollamaModel.trim()
-        const wanted = model.toLowerCase()
-        const found = models.some((m) => {
-          const name = m.toLowerCase()
-          return name === wanted || name.split(':')[0] === wanted.split(':')[0]
-        })
-        if (!found) {
+        if (!ollamaModelIsListed(models, model)) {
           return {
             ok: false,
             message: `Verbindung steht, aber das Modell "${model}" ist nicht installiert. Verfügbar: ${models.join(', ') || 'keine Modelle'}`,
@@ -174,16 +294,19 @@ export function useLlmSettings() {
         // Analyse, obwohl der Test grün aussieht.
         let showRes: Response
         try {
-          showRes = await fetch(`${base}/api/show`, {
+          showRes = await fetchOllama(configured, '/api/show', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model }),
-          })
+          }, token)
         } catch {
           return {
             ok: false,
-            message: describeOllamaFetchFailure(base, 'post'),
+            message: describeOllamaFetchFailure(configured, 'post'),
           }
+        }
+        if (showRes.status === 401 || showRes.status === 403) {
+          return { ok: false, message: 'Ollama hat den Bearer-Token abgelehnt (HTTP ' + showRes.status + ').' }
         }
         if (!showRes.ok) {
           return { ok: false, message: `Abfrage der Modelldetails schlug fehl (HTTP ${showRes.status}).` }
@@ -198,7 +321,8 @@ export function useLlmSettings() {
           }
         }
 
-        return { ok: true, message: `Verbindung steht, Modell "${model}" ist einsatzbereit.` }
+        const via = ollamaRoute.value === 'proxy' ? 'über den App-Proxy' : 'direkt aus dem Browser'
+        return { ok: true, message: `Verbindung steht ${via}, Modell "${model}" ist einsatzbereit.` }
       }
 
       const key = candidate.openaiApiKey.trim()
@@ -216,7 +340,7 @@ export function useLlmSettings() {
       return { ok: true, message: 'Verbindung zu OpenAI steht.' }
     } catch (e: any) {
       if (candidate.provider === 'ollama') {
-        const base = resolveOllamaBaseUrl(candidate.ollamaBaseUrl)
+        const base = normalizeBaseUrl(candidate.ollamaBaseUrl)
         return { ok: false, message: describeOllamaFetchFailure(base, 'get') }
       }
       return {
@@ -235,5 +359,7 @@ export function useLlmSettings() {
     testConnection,
     normalizeBaseUrl,
     defaultSettings,
+    fetchOllama,
+    listOllamaModels,
   }
 }

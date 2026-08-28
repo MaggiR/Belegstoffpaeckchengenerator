@@ -6,7 +6,7 @@ const emit = defineEmits<{
   'close': []
 }>()
 
-const { settings, save, testConnection, defaultSettings } = useLlmSettings()
+const { settings, save, testConnection, defaultSettings, listOllamaModels } = useLlmSettings()
 
 // Auf einer Kopie arbeiten, damit Abbrechen die bisherige Konfiguration behält.
 const draft = ref({ ...settings.value })
@@ -14,6 +14,69 @@ const draft = ref({ ...settings.value })
 const testing = ref(false)
 const testResult = ref<ConnectionTestResult | null>(null)
 const showKey = ref(false)
+const showOllamaToken = ref(false)
+
+const ollamaModels = ref<string[]>([])
+const ollamaModelsLoading = ref(false)
+const ollamaModelsError = ref<string | null>(null)
+let ollamaFetchSeq = 0
+let ollamaFetchTimer: ReturnType<typeof setTimeout> | null = null
+
+async function loadOllamaModels(): Promise<void> {
+  if (draft.value.provider !== 'ollama') return
+  const seq = ++ollamaFetchSeq
+  const url = draft.value.ollamaBaseUrl
+  if (!normalizeBaseUrl(url)) {
+    ollamaModels.value = []
+    ollamaModelsError.value = 'Bitte eine Ollama-URL angeben.'
+    ollamaModelsLoading.value = false
+    return
+  }
+
+  ollamaModelsLoading.value = true
+  ollamaModelsError.value = null
+  const result = await listOllamaModels(url, draft.value.ollamaBearerToken ?? '')
+  if (seq !== ollamaFetchSeq) return
+
+  ollamaModelsLoading.value = false
+  if (!result.ok) {
+    ollamaModels.value = []
+    ollamaModelsError.value = result.message ?? 'Modelle konnten nicht geladen werden.'
+    return
+  }
+
+  ollamaModels.value = result.models
+  if (!result.models.length) {
+    ollamaModelsError.value = 'Unter dieser URL sind keine Modelle installiert.'
+    draft.value.ollamaModel = ''
+    return
+  }
+  draft.value.ollamaModel = pickOllamaModel(result.models, draft.value.ollamaModel)
+}
+
+function scheduleOllamaModelFetch(): void {
+  if (ollamaFetchTimer) clearTimeout(ollamaFetchTimer)
+  ollamaFetchTimer = setTimeout(() => {
+    void loadOllamaModels()
+  }, 350)
+}
+
+watch(
+  () => [draft.value.provider, draft.value.ollamaBaseUrl, draft.value.ollamaBearerToken] as const,
+  ([provider]) => {
+    if (provider !== 'ollama') {
+      if (ollamaFetchTimer) clearTimeout(ollamaFetchTimer)
+      return
+    }
+    scheduleOllamaModelFetch()
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  if (ollamaFetchTimer) clearTimeout(ollamaFetchTimer)
+  ollamaFetchSeq += 1
+})
 
 const providers: Array<{ value: LlmProvider; label: string; hint: string }> = [
   { value: 'none', label: 'Keine Analyse', hint: 'Belege werden nur per Texterkennung gelesen' },
@@ -113,34 +176,57 @@ function resetDraft() {
               <input
                 v-model="draft.ollamaBaseUrl"
                 type="text"
-                placeholder="http://localhost:11434 oder /ollama"
+                placeholder="http://192.168.178.187:11434"
                 class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               >
-              <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
-                Lokal: <code class="font-mono">http://localhost:11434</code>.
-                Produktiv: <code class="font-mono">/ollama</code> (Server-Proxy), wenn <code class="font-mono">OLLAMA_UPSTREAM</code> gesetzt ist.
-              </p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Authorization Bearer</label>
+              <div class="relative">
+                <input
+                  v-model="draft.ollamaBearerToken"
+                  :type="showOllamaToken ? 'text' : 'password'"
+                  placeholder="optional"
+                  autocomplete="off"
+                  class="w-full px-3 py-2 pr-10 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono"
+                >
+                <button
+                  class="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                  :title="showOllamaToken ? 'Token verbergen' : 'Token anzeigen'"
+                  @click="showOllamaToken = !showOllamaToken"
+                >
+                  <font-awesome-icon icon="eye" class="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
             <div>
               <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Modell</label>
-              <input
-                v-model="draft.ollamaModel"
-                type="text"
-                placeholder="gemma-4-E4B"
-                class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              >
-              <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
-                Das Modell muss Bilder verarbeiten können, da die ersten zwei Belegseiten mitgesendet werden.
-              </p>
-            </div>
-            <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 flex items-start gap-2">
-              <font-awesome-icon icon="circle-info" class="text-amber-500 w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-              <p class="text-[11px] text-amber-700 dark:text-amber-300">
-                Von einer öffentlichen Adresse aus kann der Browser keine LAN-IPs wie
-                <code class="font-mono">192.168.x.x</code> direkt ansprechen – nutze dann
-                <code class="font-mono">/ollama</code> mit Server-Proxy.
-                Lokal braucht Ollama <code class="font-mono">OLLAMA_ORIGINS=*</code>.
-                Über HTTPS muss Ollama ebenfalls über HTTPS erreichbar sein (Mixed Content).
+              <div class="flex items-center gap-2">
+                <select
+                  v-model="draft.ollamaModel"
+                  :disabled="ollamaModelsLoading || !ollamaModels.length"
+                  class="flex-1 min-w-0 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-60"
+                >
+                  <option v-if="!ollamaModels.length" value="">
+                    {{ ollamaModelsLoading ? 'Modelle werden geladen…' : 'Keine Modelle verfügbar' }}
+                  </option>
+                  <option v-for="name in ollamaModels" :key="name" :value="name">{{ name }}</option>
+                </select>
+                <button
+                  class="p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 flex-shrink-0"
+                  title="Modellliste aktualisieren"
+                  :disabled="ollamaModelsLoading"
+                  @click="loadOllamaModels"
+                >
+                  <font-awesome-icon
+                    :icon="ollamaModelsLoading ? 'spinner' : 'rotate-right'"
+                    :class="ollamaModelsLoading ? 'animate-spin' : ''"
+                    class="w-3.5 h-3.5"
+                  />
+                </button>
+              </div>
+              <p v-if="ollamaModelsError" class="text-[11px] text-red-600 dark:text-red-400 mt-1">
+                {{ ollamaModelsError }}
               </p>
             </div>
           </div>

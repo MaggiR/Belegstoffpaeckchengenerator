@@ -186,13 +186,16 @@ function buildUserText(ocrText: string, fileName: string): string {
 }
 
 async function callOllama(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
-  const base = resolveOllamaBaseUrl(settings.ollamaBaseUrl)
+  const configured = settings.ollamaBaseUrl
   const model = settings.ollamaModel.trim()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
   let res: Response
   try {
-    res = await fetchWithTimeout(`${base}/api/chat`, {
+    res = await fetchOllama(configured, '/api/chat', {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
@@ -206,13 +209,18 @@ async function callOllama(settings: LlmSettings, text: string, dataUrls: string[
           images: dataUrls.map(url => url.replace(/^data:[^;]+;base64,/, '')),
         }],
       }),
-    })
+    }, settings.ollamaBearerToken ?? '')
   } catch (e) {
-    throw new Error(describeNetworkFailure(e, 'Ollama', base))
+    throw new Error(describeNetworkFailure(e, 'Ollama', configured))
+  } finally {
+    clearTimeout(timer)
   }
 
   if (!res.ok) {
     const detail = await readErrorDetail(res)
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`Ollama hat den Bearer-Token abgelehnt (HTTP ${res.status}).${detail}`)
+    }
     if (res.status === 404) {
       throw new Error(`Ollama kennt das Modell "${model}" nicht (HTTP 404). Mit "ollama pull ${model}" laden oder den Namen in den Einstellungen anpassen.${detail}`)
     }

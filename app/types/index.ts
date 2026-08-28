@@ -57,6 +57,8 @@ export interface LlmSettings {
   provider: LlmProvider
   ollamaBaseUrl: string
   ollamaModel: string
+  /** Optionaler Bearer-Token für Ollama (Authorization: Bearer …). */
+  ollamaBearerToken: string
   openaiApiKey: string
   openaiModel: string
   openaiReasoningEffort: ReasoningEffort
