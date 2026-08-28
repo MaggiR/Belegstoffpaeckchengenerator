@@ -11,6 +11,8 @@ const emit = defineEmits<{
   'close': []
 }>()
 
+useScrollLock(true)
+
 const title = ref(props.document.title)
 const correspondent = ref(props.document.correspondent ?? '')
 const documentDate = ref(props.document.documentDate ?? '')

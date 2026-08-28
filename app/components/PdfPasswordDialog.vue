@@ -9,6 +9,8 @@ const emit = defineEmits<{
   close: []
 }>()
 
+useScrollLock(true)
+
 const password = ref('')
 const submitting = ref(false)
 const inputRef = ref<HTMLInputElement>()

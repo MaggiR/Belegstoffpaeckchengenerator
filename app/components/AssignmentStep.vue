@@ -34,10 +34,11 @@ const {
 } = useAppState()
 
 const { createBookings } = useTableParser()
-const { generateThumbnail, extractTextFromPdf, isPdfEncrypted } = usePdfUtils()
-const { recognizeText } = useOcr()
+const { generateThumbnail, isPdfEncrypted } = usePdfUtils()
 const { queueExtraction, queueMissing, beginExtractionBatch, endExtractionBatch } = useDocumentExtraction()
 const { uploadRequest, showUnassignAllConfirm, confirmUnassignAll } = useDocumentActions()
+
+useScrollLock(showUnassignAllConfirm)
 
 const passwordDialog = ref<{ doc: DocumentFile; wrongPassword: boolean } | null>(null)
 
@@ -222,9 +223,7 @@ async function processFile(file: File, idx: number): Promise<DocumentFile> {
     file,
     name: file.name,
     type: isPdf ? 'pdf' : 'image',
-    extractedText: '',
     thumbnailDataUrl: null,
-    ocrProcessed: false,
     // Bis das Sprachmodell antwortet, dient der Dateiname als Titel.
     title: fallbackTitleFromName(file.name),
     correspondent: null,
@@ -244,7 +243,7 @@ async function processFile(file: File, idx: number): Promise<DocumentFile> {
 }
 
 /**
- * Versucht Thumbnail + Texterkennung für ein (ggf. verschlüsseltes) Dokument.
+ * Versucht das Vorschaubild für ein (ggf. verschlüsseltes) Dokument.
  * Scheitert es an einem Passwort, wird `locked: true` gesetzt, sodass die UI
  * ein Schloss-Icon anzeigen und den User zur Passworteingabe auffordern kann.
  */
@@ -257,30 +256,6 @@ async function enrichPdfMetadata(doc: DocumentFile) {
       doc.locked = true
       doc.encrypted = true
       doc.thumbnailDataUrl = null
-      return
-    }
-  }
-
-  try {
-    if (doc.type === 'pdf') {
-      const text = await extractTextFromPdf(doc.file, doc.password)
-      doc.extractedText = text
-      if (text.trim().length < 20) {
-        try {
-          doc.extractedText = await recognizeText(doc.thumbnailDataUrl || doc.file)
-          doc.ocrProcessed = true
-        } catch {}
-      }
-    } else {
-      try {
-        doc.extractedText = await recognizeText(doc.file)
-        doc.ocrProcessed = true
-      } catch {}
-    }
-  } catch (e) {
-    if (e instanceof PdfPasswordRequiredError) {
-      doc.locked = true
-      doc.encrypted = true
     }
   }
 }
@@ -307,8 +282,6 @@ async function submitPassword(password: string) {
     locked: false,
     encrypted: true,
     thumbnailDataUrl: attempt.thumbnailDataUrl,
-    extractedText: attempt.extractedText,
-    ocrProcessed: attempt.ocrProcessed,
   })
   passwordDialog.value = null
 

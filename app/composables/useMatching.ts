@@ -1,7 +1,7 @@
 import type { Booking, DocumentFile } from '~/types'
 
 const BASE_SCORE = 100
-/** Werte aus der LLM-Auswertung sind verlässlicher als Regex-Treffer im OCR-Text. */
+/** Werte aus der LLM-Auswertung sind verlässlicher als Regex-Treffer im Dateinamen. */
 const LLM_AMOUNT_BONUS = 25
 const LLM_DATE_BONUS = 10
 /** Zeitliche Nähe entscheidet zwischen sonst gleichwertigen Kandidaten. */
@@ -107,7 +107,7 @@ export function useMatching() {
   }
 
   function buildDocSignals(doc: DocumentFile): DocSignals {
-    const haystack = `${doc.extractedText} ${doc.name}`
+    const haystack = [doc.title, doc.correspondent, doc.name].filter(Boolean).join(' ')
 
     const amountFromLlm = doc.totalAmount !== null && doc.totalAmount > 0
     const amountsInCents = amountFromLlm

@@ -117,9 +117,7 @@ interface StoredFileEntry {
   name: string
   type: 'pdf' | 'image'
   mimeType: string
-  extractedText: string
   thumbnailDataUrl: string | null
-  ocrProcessed: boolean
   encrypted?: boolean
   locked?: boolean
   password?: string
@@ -218,9 +216,7 @@ export function usePersistence() {
         id: d.id,
         name: d.name,
         type: d.type,
-        extractedText: d.extractedText,
         thumbnailDataUrl: d.thumbnailDataUrl,
-        ocrProcessed: d.ocrProcessed,
         encrypted: d.encrypted,
         locked: d.locked,
         password: d.password,
@@ -243,7 +239,7 @@ export function usePersistence() {
 
   /**
    * Zustand nach IndexedDB schreiben. IndexedDB statt localStorage, weil der
-   * Snapshot (Thumbnails, OCR-Texte, Tabellenzeilen) das localStorage-Limit
+   * Snapshot (Thumbnails, Tabellenzeilen) das localStorage-Limit
    * von ~5 MB leicht sprengt – fehlgeschlagene Saves waren still und führten
    * beim nächsten Laden zu scheinbar "verschwundenen" Daten.
    */
@@ -314,9 +310,7 @@ export function usePersistence() {
             name: doc.name,
             type: doc.type,
             mimeType: doc.file.type,
-            extractedText: doc.extractedText,
             thumbnailDataUrl: doc.thumbnailDataUrl,
-            ocrProcessed: doc.ocrProcessed,
             encrypted: doc.encrypted,
             locked: doc.locked,
             password: doc.password,
@@ -331,9 +325,7 @@ export function usePersistence() {
           }
           await idbPut(FILES_STORE, entry)
         } else if (
-          stored.extractedText !== doc.extractedText
-          || stored.thumbnailDataUrl !== doc.thumbnailDataUrl
-          || stored.ocrProcessed !== doc.ocrProcessed
+          stored.thumbnailDataUrl !== doc.thumbnailDataUrl
           || stored.encrypted !== doc.encrypted
           || stored.locked !== doc.locked
           || stored.password !== doc.password
@@ -348,9 +340,7 @@ export function usePersistence() {
           // Metadaten aktualisieren (z. B. nach Entschlüsselung oder LLM-Analyse).
           await idbPut(FILES_STORE, {
             ...stored,
-            extractedText: doc.extractedText,
             thumbnailDataUrl: doc.thumbnailDataUrl,
-            ocrProcessed: doc.ocrProcessed,
             encrypted: doc.encrypted,
             locked: doc.locked,
             password: doc.password,
@@ -456,9 +446,7 @@ export function usePersistence() {
           file,
           name: meta.name,
           type: meta.type,
-          extractedText: stored?.extractedText ?? meta.extractedText ?? '',
           thumbnailDataUrl: stored?.thumbnailDataUrl ?? meta.thumbnailDataUrl ?? null,
-          ocrProcessed: stored?.ocrProcessed ?? meta.ocrProcessed ?? false,
           encrypted: stored?.encrypted ?? meta.encrypted ?? false,
           locked: stored?.locked ?? meta.locked ?? false,
           password: stored?.password ?? meta.password,

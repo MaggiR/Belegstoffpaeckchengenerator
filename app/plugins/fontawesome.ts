@@ -55,6 +55,7 @@ import {
   faLayerGroup,
   faCircleInfo,
   faBrain,
+  faEllipsisVertical,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -112,6 +113,7 @@ library.add(
   faLayerGroup,
   faCircleInfo,
   faBrain,
+  faEllipsisVertical,
 )
 
 export default defineNuxtPlugin((nuxtApp) => {

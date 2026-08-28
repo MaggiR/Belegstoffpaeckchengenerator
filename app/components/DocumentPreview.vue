@@ -10,6 +10,8 @@ const emit = defineEmits<{
   'edit': []
 }>()
 
+useScrollLock(true)
+
 interface PageState {
   pageNum: number
   baseWidth: number
@@ -97,6 +99,23 @@ function clampPanY() {
   const maxY = VIEW_PADDING
   const minY = viewport.clientHeight - VIEW_PADDING - contentH
   panY.value = minY > maxY ? maxY : Math.min(maxY, Math.max(minY, panY.value))
+}
+
+function clampPanX() {
+  const viewport = viewportRef.value
+  const contentW = layerDimensions.value.width * zoom.value
+  if (!viewport || contentW === 0) return
+
+  const maxX = VIEW_PADDING
+  const minX = viewport.clientWidth - VIEW_PADDING - contentW
+  panX.value = minX > maxX
+    ? (viewport.clientWidth - contentW) / 2
+    : Math.min(maxX, Math.max(minX, panX.value))
+}
+
+function clampPan() {
+  clampPanX()
+  clampPanY()
 }
 
 async function initialize() {
@@ -211,7 +230,7 @@ function onWheel(e: WheelEvent) {
     panY.value -= e.deltaY
   }
 
-  clampPanY()
+  clampPan()
   scheduleVisibilityCheck()
 }
 
@@ -230,7 +249,7 @@ function onPointerMove(e: PointerEvent) {
   if (!isPanning.value) return
   panX.value = panStart.panX + (e.clientX - panStart.x)
   panY.value = panStart.panY + (e.clientY - panStart.y)
-  clampPanY()
+  clampPan()
   scheduleVisibilityCheck()
 }
 
@@ -260,7 +279,7 @@ function zoomAt(factor: number) {
   panX.value = cx - (cx - panX.value) * ratio
   panY.value = cy - (cy - panY.value) * ratio
   zoom.value = newZoom
-  clampPanY()
+  clampPan()
   scheduleVisibilityCheck()
 }
 

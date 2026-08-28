@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DocFilterStatus, DocFilterType, DocSortField, DocumentFile } from '~/types'
+import { DOCUMENT_KINDS, DOCUMENT_KIND_LABELS } from '~/types'
 
 const props = defineProps<{
   uploading: boolean
@@ -180,7 +181,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
       </h3>
       <span
         v-if="unassignedDocuments.length > 0"
-        class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
+        class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
       >
         {{ unassignedDocuments.length }}
       </span>
@@ -312,6 +313,54 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
                 {{ option.label }}
               </button>
             </div>
+          </div>
+
+          <div>
+            <p class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1">
+              Dokumentart
+            </p>
+            <select
+              v-model="docFilters.documentKind"
+              class="w-full h-8 px-2 text-[11px] rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            >
+              <option value="all">Alle</option>
+              <option v-for="kind in DOCUMENT_KINDS" :key="kind" :value="kind">
+                {{ DOCUMENT_KIND_LABELS[kind] }}
+              </option>
+            </select>
+            <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+              Belege ohne erkannte Dokumentart werden dabei ausgeblendet.
+            </p>
+          </div>
+
+          <div>
+            <p class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1">
+              Betrag (€)
+            </p>
+            <div class="flex items-center gap-1.5">
+              <input
+                :value="docFilters.amountMin ?? ''"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="Min"
+                class="flex-1 min-w-0 h-7 px-1.5 text-[11px] rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 placeholder:text-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                @input="docFilters.amountMin = ($event.target as HTMLInputElement).value ? Number(($event.target as HTMLInputElement).value) : null"
+              >
+              <span class="text-gray-300 dark:text-gray-600 text-[10px]">–</span>
+              <input
+                :value="docFilters.amountMax ?? ''"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="Max"
+                class="flex-1 min-w-0 h-7 px-1.5 text-[11px] rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 placeholder:text-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                @input="docFilters.amountMax = ($event.target as HTMLInputElement).value ? Number(($event.target as HTMLInputElement).value) : null"
+              >
+            </div>
+            <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+              Belege ohne erkannten Betrag werden dabei ausgeblendet.
+            </p>
           </div>
 
           <div>
@@ -489,16 +538,14 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
         <!-- Eckdaten -->
         <div class="flex-1 min-w-0 flex flex-col">
           <p
-            class="text-xs font-semibold leading-snug line-clamp-2 pr-12"
+            class="text-xs font-semibold leading-snug line-clamp-2"
             :class="doc.locked ? 'text-amber-700 dark:text-amber-300' : 'text-gray-900 dark:text-white'"
           >
             {{ doc.title }}
           </p>
 
-          <div v-if="doc.documentKind || doc.correspondent" class="flex items-center gap-1.5 mt-1 min-w-0">
-            <DocumentKindChip v-if="doc.documentKind" :kind="doc.documentKind" />
+          <div v-if="doc.correspondent" class="flex items-center gap-1.5 mt-1 min-w-0">
             <p
-              v-if="doc.correspondent"
               class="text-[11px] text-gray-500 dark:text-gray-400 truncate"
             >
               {{ doc.correspondent }}

@@ -120,9 +120,55 @@ onUnmounted(() => {
 </template>
 
 <style>
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Scrollbars folgen Hell/Dunkel – inklusive Hover (Windows/Chromium). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225) transparent;
+}
+
+html.dark * {
+  scrollbar-color: rgb(75 85 99) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(203 213 225);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(148 163 184);
+}
+
+html.dark *::-webkit-scrollbar-thumb {
+  background-color: rgb(75 85 99);
+}
+
+html.dark *::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(107 114 128);
 }
 
 .fade-enter-active,

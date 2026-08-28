@@ -6,6 +6,8 @@ const emit = defineEmits<{
   'close': []
 }>()
 
+useScrollLock(true)
+
 const { settings, save, testConnection, defaultSettings, listOllamaModels } = useLlmSettings()
 const { isDark, setDark } = useDarkMode()
 
@@ -88,7 +90,7 @@ onBeforeUnmount(() => {
 })
 
 const providers: Array<{ value: LlmProvider; label: string; hint: string }> = [
-  { value: 'none', label: 'Keine Analyse', hint: 'Belege werden nur per Texterkennung gelesen' },
+  { value: 'none', label: 'Keine Analyse', hint: 'Belege erhalten den Dateinamen als Titel' },
   { value: 'ollama', label: 'Ollama', hint: 'Lokal oder im eigenen Netz gehostet' },
   { value: 'openai', label: 'OpenAI', hint: 'Cloud-API, benötigt einen API-Key' },
 ]

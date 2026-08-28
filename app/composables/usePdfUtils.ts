@@ -37,6 +37,9 @@ export async function isPdfEncrypted(file: File): Promise<boolean> {
   return /\/Encrypt\b/.test(ascii)
 }
 
+const PAGE_JPEG_QUALITY = 0.8
+const THUMBNAIL_JPEG_QUALITY = 0.7
+
 export function usePdfUtils() {
   async function openPdfDocument(file: File, password?: string) {
     const pdfjs = await getPdfJs()
@@ -55,22 +58,6 @@ export function usePdfUtils() {
     }
   }
 
-  async function extractTextFromPdf(file: File, password?: string): Promise<string> {
-    const pdf = await openPdfDocument(file, password)
-    const texts: string[] = []
-
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i)
-      const content = await page.getTextContent()
-      const pageText = content.items
-        .map((item: any) => item.str)
-        .join(' ')
-      texts.push(pageText)
-    }
-
-    return texts.join('\n')
-  }
-
   async function generateThumbnail(
     file: File,
     maxWidth = 400,
@@ -87,7 +74,7 @@ export function usePdfUtils() {
           canvas.height = img.height * scale
           const ctx = canvas.getContext('2d')!
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-          resolve(canvas.toDataURL('image/jpeg', 0.7))
+          resolve(canvas.toDataURL('image/jpeg', THUMBNAIL_JPEG_QUALITY))
           URL.revokeObjectURL(img.src)
         }
         img.src = URL.createObjectURL(file)
@@ -106,7 +93,7 @@ export function usePdfUtils() {
     const ctx = canvas.getContext('2d')!
 
     await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise
-    return canvas.toDataURL('image/jpeg', 0.7)
+    return canvas.toDataURL('image/jpeg', THUMBNAIL_JPEG_QUALITY)
   }
 
   async function renderPdfPage(file: File, pageNum: number, scale = 1.5, password?: string): Promise<string> {
@@ -146,7 +133,7 @@ export function usePdfUtils() {
       canvas.height = viewport.height
       const ctx = canvas.getContext('2d')!
       await page.render({ canvasContext: ctx, viewport }).promise
-      return canvas.toDataURL('image/jpeg', 0.85)
+      return canvas.toDataURL('image/jpeg', PAGE_JPEG_QUALITY)
     }
 
     return {
@@ -272,7 +259,6 @@ export function usePdfUtils() {
   }
 
   return {
-    extractTextFromPdf,
     generateThumbnail,
     renderPdfPage,
     getPdfPageCount,

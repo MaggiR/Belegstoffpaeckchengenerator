@@ -21,9 +21,7 @@ export interface DocumentFile {
   file: File
   name: string
   type: 'pdf' | 'image'
-  extractedText: string
   thumbnailDataUrl: string | null
-  ocrProcessed: boolean
   /** PDF enthält einen /Encrypt-Eintrag. Beim Export wird in dem Fall rasterisiert. */
   encrypted?: boolean
   /** PDF konnte (noch) nicht geöffnet werden – Passwort erforderlich. */
@@ -127,10 +125,14 @@ export interface DocSortState {
 
 export type DocFilterStatus = 'all' | 'analyzed' | 'unanalyzed' | 'failed'
 export type DocFilterType = 'all' | 'pdf' | 'image'
+export type DocFilterDocumentKind = 'all' | DocumentKind
 
 export interface DocFilterState {
   status: DocFilterStatus
   type: DocFilterType
+  documentKind: DocFilterDocumentKind
+  amountMin: number | null
+  amountMax: number | null
   dateFrom: string | null
   dateTo: string | null
 }

@@ -14,6 +14,8 @@ const props = defineProps<{
   mapping: ColumnMapping
 }>()
 
+useScrollLock(true)
+
 const emit = defineEmits<{
   'update:mapping': [mapping: ColumnMapping]
   'apply': [filters: ImportFilter]

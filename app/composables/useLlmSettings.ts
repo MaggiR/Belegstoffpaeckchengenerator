@@ -124,6 +124,15 @@ function isUsableOllamaResponse(res: Response): boolean {
   return contentType.includes('json')
 }
 
+/**
+ * Nur diese Status erzeugt der App-Proxy selbst, wenn er das Ziel nicht
+ * erreicht. Ein 500 stammt dagegen von Ollama und trägt die eigentliche
+ * Fehlermeldung im Body – die darf nicht durch einen Fallback verloren gehen.
+ */
+function isProxyGatewayFailure(res: Response): boolean {
+  return res.status === 502 || res.status === 503 || res.status === 504
+}
+
 function bearerValue(token?: string): string {
   const trimmed = (token ?? '').trim()
   if (!trimmed) return ''
@@ -187,23 +196,39 @@ export async function fetchOllama(
   }
 
   if (preferProxy) {
+    let gatewayFailure: Response | null = null
     try {
       const proxied = await viaProxy()
-      if (isUsableOllamaResponse(proxied) || proxied.status < 500) return proxied
+      if (isUsableOllamaResponse(proxied) || !isProxyGatewayFailure(proxied)) return proxied
+      gatewayFailure = proxied
     } catch {
       ollamaRoute.value = null
     }
-    return viaDirect()
+    try {
+      return await viaDirect()
+    } catch (e) {
+      // Bei POST scheitert der Direktzugriff regelmäßig an der CORS-Vorabanfrage.
+      // Dann ist die Proxy-Antwort die aussagekräftigere Fehlerquelle.
+      if (gatewayFailure) return gatewayFailure
+      throw e
+    }
   }
 
+  let directFailure: Response | null = null
   try {
     const direct = await viaDirect()
     if (direct.status < 500) return direct
+    directFailure = direct
   } catch {
     // Direktzugriff blockiert (CORS, Mixed Content, PNA) → Proxy.
   }
 
-  return viaProxy()
+  try {
+    return await viaProxy()
+  } catch (e) {
+    if (directFailure) return directFailure
+    throw e
+  }
 }
 
 /**
@@ -218,7 +243,7 @@ export function describeOllamaFetchFailure(configuredUrl: string, phase: 'get' |
   }
 
   if (phase === 'post') {
-    return `Weder Direktzugriff noch App-Proxy erreichen Ollama unter ${target} für Schreibanfragen.`
+    return `Weder Direktzugriff noch App-Proxy erreichen Ollama unter ${target} für Schreibanfragen. Liegt ein Auth-Proxy davor, muss OPTIONS ohne Token erlaubt sein.`
   }
 
   return `Weder Direktzugriff noch App-Proxy erreichen Ollama unter ${target}. Liegt ein Auth-Proxy davor, muss OPTIONS ohne Token erlaubt sein – oder der App-Proxy muss die Ziel-URL erreichen können.`
@@ -319,7 +344,7 @@ export function useLlmSettings() {
         if (capabilities.length > 0 && !capabilities.includes('vision')) {
           return {
             ok: false,
-            message: `Verbindung steht, aber "${model}" verarbeitet keine Bilder. Für die Belegauswertung werden die ersten zwei Seiten als Bild mitgesendet – bitte ein Modell mit Vision-Unterstützung wählen.`,
+            message: `Verbindung steht, aber "${model}" verarbeitet keine Bilder. Für die Belegauswertung werden die ersten acht Seiten als Bild mitgesendet – bitte ein Modell mit Vision-Unterstützung wählen.`,
           }
         }
 

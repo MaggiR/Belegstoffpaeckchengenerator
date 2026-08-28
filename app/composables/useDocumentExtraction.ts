@@ -3,10 +3,9 @@ import { parseDocumentKind } from '~/types'
 
 /** Vision-Modelle brauchen auf CPU-Hardware leicht mehrere Minuten pro Beleg. */
 const REQUEST_TIMEOUT_MS = 240_000
-const MAX_OCR_CHARS = 6000
-const MAX_PAGE_IMAGES = 2
-const PAGE_RENDER_SCALE = 1.5
-
+const MAX_PAGE_IMAGES = 8
+/** Zielhöhe für gerenderte PDF-Seiten (Breite proportional). Entspricht Bild-Belegen. */
+const PAGE_RENDER_HEIGHT = 1980
 /**
  * Alle Felder sind Strings statt Union-Typen wie ["string", "null"]: die
  * Schema-Umsetzung von Ollama unterstützt Typ-Unions nicht zuverlässig, und
@@ -57,7 +56,7 @@ Extrahiere genau diese fünf Felder:
 4. "documentDate": Das Datum des Belegs (Rechnungsdatum, Belegdatum, Quittungsdatum) im Format YYYY-MM-DD. Nicht das Fälligkeits-, Liefer- oder Zahlungsdatum. Nur setzen, wenn eindeutig erkennbar, sonst leerer String.
 5. "totalAmount": Der Gesamtbetrag bzw. Endbetrag des Belegs als positive Zahl mit Punkt als Dezimaltrennzeichen, zum Beispiel "1234.56". Nur setzen, wenn es KEIN Kontoauszug ist und eindeutig EIN Gesamtbetrag erkennbar ist. Bei mehreren möglichen Gesamtbeträgen, unklaren Teilbeträgen oder gar keinem Betrag: leerer String.
 
-Grundregel: Lieber ein leeres Feld als ein geratener Wert. Nur Titel und Belegtyp müssen immer gesetzt werden.
+Grundregel: Lieber ein leeres Feld als ein geratener Wert. Nur Titel und Belegtyp müssen immer gesetzt werden. Halte dich stets an die Namen, Bezeichnungen und Eigenschreibweisen aus dem Dokument.
 
 Antworte ausschließlich mit einem JSON-Objekt mit genau diesen fünf Schlüsseln.`
 }
@@ -194,14 +193,10 @@ async function readErrorDetail(res: Response): Promise<string> {
   }
 }
 
-function buildUserText(ocrText: string, fileName: string, organizationName: string): string {
-  const trimmedOcr = ocrText.trim().slice(0, MAX_OCR_CHARS)
-  const ocrBlock = trimmedOcr
-    ? `Per Texterkennung ausgelesener Inhalt:\n"""\n${trimmedOcr}\n"""`
-    : 'Es liegt kein verwertbarer Text vor, beurteile ausschließlich die Seitenbilder.'
+function buildUserText(fileName: string, organizationName: string): string {
   const org = organizationName.trim()
   const orgBlock = org ? `Parteigliederung: ${org}\n\n` : ''
-  return `${buildPrompt(org)}\n\n${orgBlock}Dateiname: ${fileName}\n\n${ocrBlock}`
+  return `${buildPrompt(org)}\n\n${orgBlock}Dateiname: ${fileName}\n\nBeurteile den Beleg anhand der mitgelieferten Seitenbilder.`
 }
 
 async function callOllama(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
@@ -235,7 +230,7 @@ async function callOllama(settings: LlmSettings, text: string, dataUrls: string[
     }, settings.ollamaBearerToken ?? '')
 
     res = await send(body)
-    if (!res.ok && effort && (res.status === 400 || res.status === 422)) {
+    if (!res.ok && effort && (res.status === 400 || res.status === 422 || res.status === 500)) {
       const { think: _ignored, ...withoutThink } = body
       res = await send(withoutThink)
     }
@@ -329,11 +324,11 @@ export function useDocumentExtraction() {
   const { settings, isConfigured } = useLlmSettings()
   const { loadPdf, generateThumbnail } = usePdfUtils()
 
-  /** Erste Seiten als JPEG-DataURLs. Bei Bildern das Bild selbst, verkleinert. */
+  /** Bis zu acht Seiten als JPEG-DataURLs. Bei Bildern das Bild selbst, verkleinert. */
   async function collectPageImages(doc: DocumentFile): Promise<string[]> {
     if (doc.type === 'image') {
       try {
-        return [await generateThumbnail(doc.file, 1400, 1980)]
+        return [await generateThumbnail(doc.file, 1400, PAGE_RENDER_HEIGHT)]
       } catch {
         return []
       }
@@ -345,7 +340,9 @@ export function useDocumentExtraction() {
       const pageCount = Math.min(handle.numPages, MAX_PAGE_IMAGES)
       const images: string[] = []
       for (let page = 1; page <= pageCount; page++) {
-        images.push(await handle.renderPage(page, PAGE_RENDER_SCALE))
+        const { height } = await handle.pageDimensions(page, 1)
+        const scale = PAGE_RENDER_HEIGHT / height
+        images.push(await handle.renderPage(page, scale))
       }
       return images
     } catch {
@@ -359,11 +356,11 @@ export function useDocumentExtraction() {
 
   async function extractFromDocument(doc: DocumentFile): Promise<DocumentExtraction> {
     const images = await collectPageImages(doc)
-    if (images.length === 0 && !doc.extractedText.trim()) {
-      throw new Error('Der Beleg ließ sich weder als Text noch als Seitenbild lesen.')
+    if (images.length === 0) {
+      throw new Error('Der Beleg ließ sich nicht als Seitenbild lesen.')
     }
 
-    const text = buildUserText(doc.extractedText, doc.name, settings.value.organizationName ?? '')
+    const text = buildUserText(doc.name, settings.value.organizationName ?? '')
 
     const content = settings.value.provider === 'openai'
       ? await callOpenAi(settings.value, text, images)
@@ -440,8 +437,7 @@ export function useDocumentExtraction() {
 
   /**
    * Kündigt an, dass als Nächstes `count` Belege eingereiht werden.
-   * Hält den Fortschrittsbalken offen, auch wenn Texterkennung und LLM
-   * zeitlich versetzt laufen.
+   * Hält den Fortschrittsbalken offen, bis alle Belege der Welle eingereiht sind.
    */
   function beginExtractionBatch(count: number): void {
     if (count <= 0) return
@@ -486,6 +482,15 @@ export function useDocumentExtraction() {
     }
   }
 
+  /** Stellt alle Belege erneut in die Analyse-Warteschlange (außer laufende und gesperrte). */
+  function queueReanalyzeAll(): void {
+    if (!isConfigured.value) return
+    for (const doc of documents.value) {
+      if (doc.extractionStatus === 'running' || doc.locked) continue
+      queueExtraction(doc.id)
+    }
+  }
+
   const isExtracting = computed(() => activeDocIds.value.length > 0)
   const pendingExtractions = computed(() => queued.value.length + activeDocIds.value.length)
   const extractionProgressPercent = computed(() =>
@@ -495,6 +500,7 @@ export function useDocumentExtraction() {
   return {
     queueExtraction,
     queueMissing,
+    queueReanalyzeAll,
     beginExtractionBatch,
     endExtractionBatch,
     activeDocId: computed(() => activeDocIds.value[0] ?? null),

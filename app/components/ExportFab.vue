@@ -8,6 +8,8 @@ const isExporting = ref(false)
 const exportDone = ref(false)
 const error = ref('')
 
+useScrollLock(showModal)
+
 const sortedBookingsWithDocs = computed(() =>
   [...bookings.value]
     .filter(b => b.documentIds.length > 0)

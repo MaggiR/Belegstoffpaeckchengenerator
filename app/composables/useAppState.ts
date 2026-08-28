@@ -14,7 +14,15 @@ import { documentKindLabel } from '~/types'
 import { fieldsMatchSearch } from '~/composables/searchText'
 
 function emptyDocFilters(): DocFilterState {
-  return { status: 'all', type: 'all', dateFrom: null, dateTo: null }
+  return {
+    status: 'all',
+    type: 'all',
+    documentKind: 'all',
+    amountMin: null,
+    amountMax: null,
+    dateFrom: null,
+    dateTo: null,
+  }
 }
 
 /** Belege ohne Wert sortieren unabhängig von der Richtung ans Ende. */
@@ -148,6 +156,9 @@ export function useAppState() {
     let count = 0
     if (f.status !== 'all') count++
     if (f.type !== 'all') count++
+    if (f.documentKind !== 'all') count++
+    if (f.amountMin !== null) count++
+    if (f.amountMax !== null) count++
     if (f.dateFrom) count++
     if (f.dateTo) count++
     return count
@@ -164,11 +175,11 @@ export function useAppState() {
 
     if (search) {
       result = result.filter(d =>
-        fieldsMatchSearch([d.title, d.correspondent, d.name, d.extractedText, documentKindLabel(d.documentKind)], search),
+        fieldsMatchSearch([d.title, d.correspondent, d.name, documentKindLabel(d.documentKind)], search),
       )
     }
 
-    const { status, type, dateFrom, dateTo } = docFilters.value
+    const { status, type, documentKind, amountMin, amountMax, dateFrom, dateTo } = docFilters.value
 
     if (status === 'analyzed') {
       result = result.filter(d => d.extractionStatus === 'done')
@@ -180,6 +191,17 @@ export function useAppState() {
 
     if (type !== 'all') {
       result = result.filter(d => d.type === type)
+    }
+
+    if (documentKind !== 'all') {
+      result = result.filter(d => d.documentKind === documentKind)
+    }
+
+    if (amountMin !== null) {
+      result = result.filter(d => d.totalAmount !== null && d.totalAmount >= amountMin)
+    }
+    if (amountMax !== null) {
+      result = result.filter(d => d.totalAmount !== null && d.totalAmount <= amountMax)
     }
 
     // Belege ohne erkanntes Datum fallen aus einer Zeitraumeingrenzung heraus.

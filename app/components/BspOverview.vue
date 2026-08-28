@@ -6,6 +6,8 @@ const { switchToBsp, createNewBsp, deleteBsp } = usePersistence()
 
 const deleteTarget = ref<BspMeta | null>(null)
 
+useScrollLock(computed(() => deleteTarget.value !== null))
+
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('de-DE', {
     day: '2-digit',
