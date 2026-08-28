@@ -272,6 +272,7 @@ async function callOllama(
   const configured = settings.ollamaBaseUrl
   const model = settings.ollamaModel.trim()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const startedAt = Date.now()
 
   let res: Response
   let errorMessage: string | null = null
@@ -325,10 +326,22 @@ async function callOllama(
       throw new Error(`Ollama kennt das Modell "${model}" nicht (HTTP 404). Mit "ollama pull ${model}" laden oder den Namen in den Einstellungen anpassen.${detail}`)
     }
     if (res.status === 504 || res.status === 408 || res.status === 524) {
+      // Unser eigener Proxy markiert seine Antworten, sonst kommt der Abbruch
+      // von einem Auth-Proxy vor Ollama – die Stellschraube liegt jeweils anders.
+      const fromAppProxy = res.headers.get('X-App-Proxy') === '1'
+      const seconds = Math.round((Date.now() - startedAt) / 1000)
+      const culprit = fromAppProxy
+        ? 'Abgebrochen hat der App-Proxy dieser Anwendung (nginx.conf)'
+        : 'Abgebrochen hat ein Auth-Proxy vor Ollama (dessen eigene Konfiguration)'
+      // Eine Abbruchzeit im Sekundenbereich stammt aus proxy_connect_timeout,
+      // nicht aus proxy_read_timeout – dann ist das Ziel gar nicht erreichbar.
+      const hint = seconds <= 30
+        ? 'So früh greift kein Lese-Timeout: hier scheitert bereits der Verbindungsaufbau zum Ziel ("proxy_connect_timeout"). '
+          + 'Prüfe, ob der Proxy-Container die Ollama-Adresse überhaupt auflösen und erreichen kann – ein Direktzugriff aus dem Browser sagt darüber nichts aus.'
+        : 'Das Modell rechnet länger als der Proxy wartet ("proxy_read_timeout"). Da die Antwort unstreamed übertragen wird, '
+          + 'muss dieser Wert die komplette Rechenzeit abdecken – inklusive Modell-Ladezeit beim ersten Beleg.'
       throw new Error(
-        `Ein Proxy vor Ollama hat die Anfrage nach Zeitüberschreitung abgebrochen (HTTP ${res.status}), bevor "${model}" fertig war. `
-        + 'Das Modell rechnet länger als der Proxy wartet: entweder das Lese-Timeout dort erhöhen (bei nginx/OpenResty "proxy_read_timeout") '
-        + 'oder ein schnelleres Modell verwenden.',
+        `Zeitüberschreitung nach ${seconds} s (HTTP ${res.status}), bevor "${model}" fertig war. ${culprit}. ${hint}`,
       )
     }
     const memoryFailure = describeModelMemoryFailure(raw, model, dataUrls.length)
