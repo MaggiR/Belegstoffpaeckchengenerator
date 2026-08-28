@@ -401,13 +401,16 @@ function onTileClick() {
             >
               {{ doc.title }}
             </span>
-            <span
-              v-if="doc.correspondent"
-              v-trunc-title
-              class="text-[10px] block truncate text-emerald-600/80 dark:text-emerald-400/70"
-            >
-              {{ doc.correspondent }}
-            </span>
+            <div v-if="doc.documentKind || doc.correspondent" class="mt-0.5 flex items-center gap-1 min-w-0">
+              <DocumentKindChip v-if="doc.documentKind" :kind="doc.documentKind" />
+              <span
+                v-if="doc.correspondent"
+                v-trunc-title
+                class="text-[10px] truncate text-emerald-600/80 dark:text-emerald-400/70"
+              >
+                {{ doc.correspondent }}
+              </span>
+            </div>
           </div>
 
           <button

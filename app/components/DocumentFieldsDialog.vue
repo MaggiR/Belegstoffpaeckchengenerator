@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { DocumentFile } from '~/types'
+import type { DocumentFile, DocumentKind } from '~/types'
+import { DOCUMENT_KINDS, DOCUMENT_KIND_LABELS } from '~/types'
 
 const props = defineProps<{
   document: DocumentFile
@@ -13,6 +14,7 @@ const emit = defineEmits<{
 const title = ref(props.document.title)
 const correspondent = ref(props.document.correspondent ?? '')
 const documentDate = ref(props.document.documentDate ?? '')
+const documentKind = ref<DocumentKind | ''>(props.document.documentKind ?? '')
 
 function formatAmountForInput(amount: number): string {
   return amount.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -45,6 +47,7 @@ function submit() {
     correspondent: correspondent.value.trim() || null,
     documentDate: documentDate.value || null,
     totalAmount: parseAmountInput(totalAmount.value),
+    documentKind: documentKind.value || null,
   })
   emit('close')
 }
@@ -87,6 +90,19 @@ function submit() {
               class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               @keydown.enter="submit"
             >
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Belegtyp</label>
+            <select
+              v-model="documentKind"
+              class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            >
+              <option value="">nicht gesetzt</option>
+              <option v-for="kind in DOCUMENT_KINDS" :key="kind" :value="kind">
+                {{ DOCUMENT_KIND_LABELS[kind] }}
+              </option>
+            </select>
           </div>
 
           <div class="flex gap-3">

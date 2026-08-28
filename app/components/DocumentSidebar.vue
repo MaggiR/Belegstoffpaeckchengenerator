@@ -185,7 +185,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
         {{ unassignedDocuments.length }}
       </span>
       <div
-        v-if="batchTotal > 1"
+        v-if="batchTotal > 0"
         class="ml-auto flex items-center gap-1.5 min-w-[88px]"
         :title="`${batchCompleted} von ${batchTotal} Belegen analysiert`"
       >
@@ -495,12 +495,15 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
             {{ doc.title }}
           </p>
 
-          <p
-            v-if="doc.correspondent"
-            class="text-[11px] text-gray-500 dark:text-gray-400 truncate mt-0.5"
-          >
-            {{ doc.correspondent }}
-          </p>
+          <div v-if="doc.documentKind || doc.correspondent" class="flex items-center gap-1.5 mt-1 min-w-0">
+            <DocumentKindChip v-if="doc.documentKind" :kind="doc.documentKind" />
+            <p
+              v-if="doc.correspondent"
+              class="text-[11px] text-gray-500 dark:text-gray-400 truncate"
+            >
+              {{ doc.correspondent }}
+            </p>
+          </div>
 
           <div class="flex items-center gap-2 mt-auto pt-1 min-h-[16px]">
             <span

@@ -36,7 +36,7 @@ const {
 const { createBookings } = useTableParser()
 const { generateThumbnail, extractTextFromPdf, isPdfEncrypted } = usePdfUtils()
 const { recognizeText } = useOcr()
-const { queueExtraction, queueMissing } = useDocumentExtraction()
+const { queueExtraction, queueMissing, beginExtractionBatch, endExtractionBatch } = useDocumentExtraction()
 const { uploadRequest, showUnassignAllConfirm, confirmUnassignAll } = useDocumentActions()
 
 const passwordDialog = ref<{ doc: DocumentFile; wrongPassword: boolean } | null>(null)
@@ -130,6 +130,7 @@ async function handleDropFile(bookingId: string, files: FileList) {
 
   beginAssignmentBatch()
   try {
+    beginExtractionBatch(fileArray.length)
     // Alle abgelegten Dateien landen bei dieser Buchung – mehrere Belege sind erlaubt.
     for (let i = 0; i < fileArray.length; i++) {
       const doc = await processFile(fileArray[i], i)
@@ -139,6 +140,7 @@ async function handleDropFile(bookingId: string, files: FileList) {
       queueExtraction(doc.id)
     }
   } finally {
+    endExtractionBatch()
     endAssignmentBatch()
   }
 
@@ -228,6 +230,7 @@ async function processFile(file: File, idx: number): Promise<DocumentFile> {
     correspondent: null,
     documentDate: null,
     totalAmount: null,
+    documentKind: null,
     extractionStatus: 'pending',
   }
 
@@ -322,15 +325,19 @@ async function handleAdditionalUpload(files: FileList) {
   sidebarUploading.value = true
   sidebarUploadDone.value = 0
   sidebarUploadTotal.value = fileArray.length
+  beginExtractionBatch(fileArray.length)
 
-  for (let i = 0; i < fileArray.length; i++) {
-    const doc = await processFile(fileArray[i], i)
-    addDocuments([doc])
-    queueExtraction(doc.id)
-    sidebarUploadDone.value = i + 1
+  try {
+    for (let i = 0; i < fileArray.length; i++) {
+      const doc = await processFile(fileArray[i], i)
+      addDocuments([doc])
+      queueExtraction(doc.id)
+      sidebarUploadDone.value = i + 1
+    }
+  } finally {
+    endExtractionBatch()
+    sidebarUploading.value = false
   }
-
-  sidebarUploading.value = false
 }
 
 // Dynamische Messung der FilterBar-Höhe für sticky Monatslabels

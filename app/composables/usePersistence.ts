@@ -1,4 +1,5 @@
-import type { BspMeta, ExtractionStatus } from '~/types'
+import type { BspMeta, DocumentKind, ExtractionStatus } from '~/types'
+import { parseDocumentKind } from '~/types'
 import { fallbackTitleFromName } from '~/composables/useDocumentExtraction'
 
 const DB_NAME = 'bsp-generator'
@@ -126,6 +127,7 @@ interface StoredFileEntry {
   correspondent?: string | null
   documentDate?: string | null
   totalAmount?: number | null
+  documentKind?: DocumentKind | null
   extractionStatus?: ExtractionStatus
   extractionError?: string
   data: ArrayBuffer
@@ -226,6 +228,7 @@ export function usePersistence() {
         correspondent: d.correspondent,
         documentDate: d.documentDate,
         totalAmount: d.totalAmount,
+        documentKind: d.documentKind,
         extractionStatus: d.extractionStatus,
         extractionError: d.extractionError,
       })),
@@ -321,6 +324,7 @@ export function usePersistence() {
             correspondent: doc.correspondent,
             documentDate: doc.documentDate,
             totalAmount: doc.totalAmount,
+            documentKind: doc.documentKind,
             extractionStatus: doc.extractionStatus,
             extractionError: doc.extractionError,
             data: await doc.file.arrayBuffer(),
@@ -337,6 +341,7 @@ export function usePersistence() {
           || stored.correspondent !== doc.correspondent
           || stored.documentDate !== doc.documentDate
           || stored.totalAmount !== doc.totalAmount
+          || stored.documentKind !== doc.documentKind
           || stored.extractionStatus !== doc.extractionStatus
           || stored.extractionError !== doc.extractionError
         ) {
@@ -353,6 +358,7 @@ export function usePersistence() {
             correspondent: doc.correspondent,
             documentDate: doc.documentDate,
             totalAmount: doc.totalAmount,
+            documentKind: doc.documentKind,
             extractionStatus: doc.extractionStatus,
             extractionError: doc.extractionError,
           })
@@ -441,6 +447,10 @@ export function usePersistence() {
 
         // Belege aus Zuständen vor der LLM-Auswertung gelten als "nicht analysiert",
         // damit sie in der Oberfläche nachgeholt werden können.
+        const extractionStatus = stored?.extractionStatus ?? meta.extractionStatus ?? 'skipped'
+        let documentKind = parseDocumentKind(stored?.documentKind ?? meta.documentKind)
+        // Alter Default "Sonstige" bei nicht analysierten Belegen nicht als Typ anzeigen.
+        if (extractionStatus !== 'done' && documentKind === 'other') documentKind = null
         return {
           id: meta.id,
           file,
@@ -456,7 +466,8 @@ export function usePersistence() {
           correspondent: stored?.correspondent ?? meta.correspondent ?? null,
           documentDate: stored?.documentDate ?? meta.documentDate ?? null,
           totalAmount: stored?.totalAmount ?? meta.totalAmount ?? null,
-          extractionStatus: stored?.extractionStatus ?? meta.extractionStatus ?? 'skipped',
+          documentKind,
+          extractionStatus,
           extractionError: stored?.extractionError ?? meta.extractionError,
         }
       })

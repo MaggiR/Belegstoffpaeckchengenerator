@@ -397,22 +397,36 @@ watch([zoom, panX, panY], () => {
 
     <!-- Titel-Badge (links oben) -->
     <div
-      class="preview-chrome absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white text-xs max-w-[calc(50%-4rem)] pointer-events-none"
+      class="preview-chrome absolute top-3 left-3 flex flex-col items-start gap-1 max-w-[calc(50%-4rem)] pointer-events-none"
     >
+      <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/55 backdrop-blur-sm text-white text-xs min-w-0 max-w-full">
         <font-awesome-icon
           :icon="document.type === 'pdf' ? 'file-pdf' : 'file-image'"
           class="text-gray-300 flex-shrink-0 w-3 h-3"
         />
         <span class="font-medium truncate" :title="document.name">{{ document.title || document.name }}</span>
-        <span v-if="document.correspondent" class="text-[10px] text-gray-300 truncate flex-shrink-0">
-          · {{ document.correspondent }}
-        </span>
         <span
           v-if="!isImage && pages.length > 0"
           class="text-[10px] text-gray-400 flex-shrink-0"
         >
           · {{ pages.length }} Seite{{ pages.length !== 1 ? 'n' : '' }}
         </span>
+      </div>
+      <div
+        v-if="document.totalAmount !== null"
+        class="px-3 py-1 rounded-full bg-black/55 backdrop-blur-sm text-white text-xs font-semibold tabular-nums"
+      >
+        {{ document.totalAmount.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) }}
+      </div>
+      <div v-if="document.documentKind || document.correspondent" class="flex items-center gap-1.5 min-w-0">
+        <DocumentKindChip v-if="document.documentKind" :kind="document.documentKind" overlay />
+        <span
+          v-if="document.correspondent"
+          class="px-2 py-0.5 rounded-full bg-black/55 backdrop-blur-sm text-[10px] text-gray-200 truncate max-w-[12rem]"
+        >
+          {{ document.correspondent }}
+        </span>
+      </div>
     </div>
 
     <!-- Bedienelemente (rechts oben) -->

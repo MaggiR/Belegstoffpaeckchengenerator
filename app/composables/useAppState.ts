@@ -10,6 +10,7 @@ import type {
   AppView,
   BspMeta,
 } from '~/types'
+import { documentKindLabel } from '~/types'
 import { fieldsMatchSearch } from '~/composables/searchText'
 
 function emptyDocFilters(): DocFilterState {
@@ -163,7 +164,7 @@ export function useAppState() {
 
     if (search) {
       result = result.filter(d =>
-        fieldsMatchSearch([d.title, d.correspondent, d.name, d.extractedText], search),
+        fieldsMatchSearch([d.title, d.correspondent, d.name, d.extractedText, documentKindLabel(d.documentKind)], search),
       )
     }
 

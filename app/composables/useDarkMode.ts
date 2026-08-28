@@ -19,7 +19,11 @@ export function useDarkMode() {
   }
 
   function toggle() {
-    isDark.value = !isDark.value
+    setDark(!isDark.value)
+  }
+
+  function setDark(value: boolean) {
+    isDark.value = value
     localStorage.setItem('bsp-dark-mode', String(isDark.value))
     apply()
   }
@@ -28,5 +32,5 @@ export function useDarkMode() {
     document.documentElement.classList.toggle('dark', isDark.value)
   }
 
-  return { isDark: readonly(isDark), toggle, init }
+  return { isDark: readonly(isDark), toggle, setDark, init }
 }

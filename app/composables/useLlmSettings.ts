@@ -7,9 +7,11 @@ type OllamaRoute = 'direct' | 'proxy'
 function defaultSettings(): LlmSettings {
   return {
     provider: 'none',
+    organizationName: '',
     ollamaBaseUrl: 'http://192.168.178.187:11434',
     ollamaModel: 'gemma-4-E4B',
     ollamaBearerToken: '',
+    ollamaReasoningEffort: '',
     openaiApiKey: '',
     openaiModel: 'gpt-5-luna',
     openaiReasoningEffort: 'medium',

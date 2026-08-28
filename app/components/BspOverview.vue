@@ -2,7 +2,6 @@
 import type { BspMeta } from '~/types'
 
 const { bspList, showSettings } = useAppState()
-const { isDark, toggle } = useDarkMode()
 const { switchToBsp, createNewBsp, deleteBsp } = usePersistence()
 
 const deleteTarget = ref<BspMeta | null>(null)
@@ -43,17 +42,10 @@ const sortedBsps = computed(() =>
       <div class="absolute right-0 top-0 flex items-center gap-1">
         <button
           class="p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          title="Beleganalyse einrichten"
+          title="Einstellungen"
           @click="showSettings = true"
         >
           <font-awesome-icon icon="gear" class="w-4 h-4" />
-        </button>
-        <button
-          class="p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          :title="isDark ? 'Helles Design' : 'Dunkles Design'"
-          @click="toggle"
-        >
-          <font-awesome-icon :icon="isDark ? 'sun' : 'moon'" class="w-4 h-4" />
         </button>
       </div>
       <div class="flex items-center justify-center gap-3 mb-2">

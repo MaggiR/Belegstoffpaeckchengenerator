@@ -1,4 +1,5 @@
 import type { DocumentExtraction, DocumentFile, LlmSettings } from '~/types'
+import { parseDocumentKind } from '~/types'
 
 /** Vision-Modelle brauchen auf CPU-Hardware leicht mehrere Minuten pro Beleg. */
 const REQUEST_TIMEOUT_MS = 240_000
@@ -17,9 +18,10 @@ const SCHEMA_PROPERTIES = {
   correspondent: { type: 'string' },
   documentDate: { type: 'string' },
   totalAmount: { type: 'string' },
+  documentKind: { type: 'string' },
 }
 
-const SCHEMA_REQUIRED = ['title', 'correspondent', 'documentDate', 'totalAmount']
+const SCHEMA_REQUIRED = ['title', 'correspondent', 'documentDate', 'totalAmount', 'documentKind']
 
 /** Ollama wandelt das Schema in eine Grammatik um und verträgt dabei kein `additionalProperties`. */
 const OLLAMA_SCHEMA = {
@@ -36,24 +38,38 @@ const OPENAI_SCHEMA = {
   required: SCHEMA_REQUIRED,
 }
 
-const PROMPT = `Du analysierst einen Buchungsbeleg (Rechnung, Quittung, Antrag, Vertrag o. ä.) für die Buchhaltung eines politischen Kreisverbands.
+function buildPrompt(organizationName: string): string {
+  const org = organizationName.trim()
+  const audience = org
+    ? `der Parteigliederung „${org}“`
+    : 'eines politischen Verbands'
+  const audienceHint = org
+    ? ` vom ${org}`
+    : ' des politischen Verbands'
 
-Extrahiere genau diese vier Felder:
+  return `Du analysierst einen Buchungsbeleg (Rechnung, Quittung, Antrag, Vertrag o. ä.) für die Buchhaltung ${audience}.
 
-1. "title": Ein kurzer, sprechender Titel für den INHALT des Belegs, 1 bis 4 Wörter, ohne Firmennamen und ohne Datum. Beispiele: "Wahlkampfflyer", "Rückerstattungsantrag", "Cloud-Hosting", "Raummiete", "Portokosten". Dieses Feld ist PFLICHT und darf niemals leer sein. Wenn der Inhalt unklar ist, wähle den plausibelsten allgemeinen Begriff.
-2. "correspondent": Der Aussteller des Belegs bzw. der Geschäftspartner (Firma oder Person). Nur setzen, wenn eindeutig erkennbar, sonst leerer String.
-3. "documentDate": Das Datum des Belegs (Rechnungsdatum, Belegdatum, Quittungsdatum) im Format YYYY-MM-DD. Nicht das Fälligkeits-, Liefer- oder Zahlungsdatum. Nur setzen, wenn eindeutig erkennbar, sonst leerer String.
-4. "totalAmount": Der Gesamtbetrag bzw. Endbetrag des Belegs als positive Zahl mit Punkt als Dezimaltrennzeichen, zum Beispiel "1234.56". Nur setzen, wenn eindeutig EIN Gesamtbetrag erkennbar ist. Bei mehreren möglichen Gesamtbeträgen, unklaren Teilbeträgen oder gar keinem Betrag: leerer String.
+Extrahiere genau diese fünf Felder:
 
-Grundregel: Lieber ein leeres Feld als ein geratener Wert. Nur der Titel muss immer gesetzt werden.
+1. "documentKind": Der Typ des Belegs. Genau einer dieser Werte: "Rechnung/Quittung", "Kontoauszug", "Rückerstattungsantrag", "Vertrag", "Sonstige". Dieses Feld ist PFLICHT. Bei Unsicherheit "Sonstige".
+2. "title": Ein kurzer, sprechender Titel für den INHALT des Belegs, 1 bis 4 Wörter, ohne Firmennamen und ohne Datum. Beispiele: "Wahlkampfflyer", "Rückerstattungsantrag Müller", "Cloud-Hosting", "Raummiete Orangerie", "Kontoauszug Sparkasse". Dieses Feld ist PFLICHT und darf niemals leer sein. Wenn der Inhalt unklar ist, wähle den plausibelsten allgemeinen Begriff.
+3. "correspondent": Der Aussteller des Belegs bzw. der Geschäftspartner${audienceHint} (Firma oder Person). Bei einer Rechnung immer der Rechnungssteller, nicht der Empfänger. Handelt es sich um einen Rückerstattungsantrag, dann ist der Geschäftspartner die Person, die den Antrag gestellt hat. Nur setzen, wenn eindeutig erkennbar, sonst leerer String.
+4. "documentDate": Das Datum des Belegs (Rechnungsdatum, Belegdatum, Quittungsdatum) im Format YYYY-MM-DD. Nicht das Fälligkeits-, Liefer- oder Zahlungsdatum. Nur setzen, wenn eindeutig erkennbar, sonst leerer String.
+5. "totalAmount": Der Gesamtbetrag bzw. Endbetrag des Belegs als positive Zahl mit Punkt als Dezimaltrennzeichen, zum Beispiel "1234.56". Nur setzen, wenn es KEIN Kontoauszug ist und eindeutig EIN Gesamtbetrag erkennbar ist. Bei mehreren möglichen Gesamtbeträgen, unklaren Teilbeträgen oder gar keinem Betrag: leerer String.
 
-Antworte ausschließlich mit einem JSON-Objekt mit genau diesen vier Schlüsseln.`
+Grundregel: Lieber ein leeres Feld als ein geratener Wert. Nur Titel und Belegtyp müssen immer gesetzt werden.
+
+Antworte ausschließlich mit einem JSON-Objekt mit genau diesen fünf Schlüsseln.`
+}
 
 const queued = ref<string[]>([])
-const activeDocId = ref<string | null>(null)
+const activeDocIds = ref<string[]>([])
 const batchTotal = ref(0)
 const batchCompleted = ref(0)
-let pumping = false
+/** Noch nicht eingereihte Plätze einer angekündigten Upload-/Analysewelle. */
+let batchPrecount = 0
+/** Gleichzeitige Beleganalysen. Der Browser und der App-Proxy halten das aus. */
+const MAX_CONCURRENT_EXTRACTIONS = 50
 
 export function fallbackTitleFromName(name: string): string {
   const withoutExtension = name.replace(/\.[^.]+$/, '')
@@ -129,6 +145,7 @@ export function normalizeExtraction(raw: any, fallbackTitle: string): DocumentEx
     correspondent: normalizeText(raw?.correspondent, 120),
     documentDate: parseDocumentDate(raw?.documentDate),
     totalAmount: parseAmount(raw?.totalAmount),
+    documentKind: parseDocumentKind(raw?.documentKind) ?? 'other',
   }
 }
 
@@ -177,12 +194,14 @@ async function readErrorDetail(res: Response): Promise<string> {
   }
 }
 
-function buildUserText(ocrText: string, fileName: string): string {
+function buildUserText(ocrText: string, fileName: string, organizationName: string): string {
   const trimmedOcr = ocrText.trim().slice(0, MAX_OCR_CHARS)
   const ocrBlock = trimmedOcr
     ? `Per Texterkennung ausgelesener Inhalt:\n"""\n${trimmedOcr}\n"""`
     : 'Es liegt kein verwertbarer Text vor, beurteile ausschließlich die Seitenbilder.'
-  return `${PROMPT}\n\nDateiname: ${fileName}\n\n${ocrBlock}`
+  const org = organizationName.trim()
+  const orgBlock = org ? `Parteigliederung: ${org}\n\n` : ''
+  return `${buildPrompt(org)}\n\n${orgBlock}Dateiname: ${fileName}\n\n${ocrBlock}`
 }
 
 async function callOllama(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
@@ -193,23 +212,33 @@ async function callOllama(settings: LlmSettings, text: string, dataUrls: string[
 
   let res: Response
   try {
-    res = await fetchOllama(configured, '/api/chat', {
+    const body: Record<string, unknown> = {
+      model,
+      stream: false,
+      format: OLLAMA_SCHEMA,
+      options: { temperature: 0 },
+      messages: [{
+        role: 'user',
+        content: text,
+        // Ollama erwartet reines Base64 ohne data:-Präfix
+        images: dataUrls.map(url => url.replace(/^data:[^;]+;base64,/, '')),
+      }],
+    }
+    const effort = settings.ollamaReasoningEffort
+    if (effort) body.think = effort
+
+    const send = (payload: Record<string, unknown>) => fetchOllama(configured, '/api/chat', {
       method: 'POST',
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        format: OLLAMA_SCHEMA,
-        options: { temperature: 0 },
-        messages: [{
-          role: 'user',
-          content: text,
-          // Ollama erwartet reines Base64 ohne data:-Präfix
-          images: dataUrls.map(url => url.replace(/^data:[^;]+;base64,/, '')),
-        }],
-      }),
+      body: JSON.stringify(payload),
     }, settings.ollamaBearerToken ?? '')
+
+    res = await send(body)
+    if (!res.ok && effort && (res.status === 400 || res.status === 422)) {
+      const { think: _ignored, ...withoutThink } = body
+      res = await send(withoutThink)
+    }
   } catch (e) {
     throw new Error(describeNetworkFailure(e, 'Ollama', configured))
   } finally {
@@ -334,7 +363,7 @@ export function useDocumentExtraction() {
       throw new Error('Der Beleg ließ sich weder als Text noch als Seitenbild lesen.')
     }
 
-    const text = buildUserText(doc.extractedText, doc.name)
+    const text = buildUserText(doc.extractedText, doc.name, settings.value.organizationName ?? '')
 
     const content = settings.value.provider === 'openai'
       ? await callOpenAi(settings.value, text, images)
@@ -373,6 +402,7 @@ export function useDocumentExtraction() {
         correspondent: result.correspondent,
         documentDate: result.documentDate,
         totalAmount: result.totalAmount,
+        documentKind: result.documentKind,
         extractionStatus: 'done',
         extractionError: undefined,
       })
@@ -386,19 +416,55 @@ export function useDocumentExtraction() {
   }
 
   async function pump(): Promise<void> {
-    if (pumping) return
-    pumping = true
+    while (queued.value.length > 0 && activeDocIds.value.length < MAX_CONCURRENT_EXTRACTIONS) {
+      const next = queued.value.shift()!
+      activeDocIds.value = [...activeDocIds.value, next]
+      void runWorker(next)
+    }
+  }
+
+  async function runWorker(docId: string): Promise<void> {
     try {
-      while (queued.value.length > 0) {
-        const next = queued.value.shift()!
-        activeDocId.value = next
-        await runFor(next)
-        batchCompleted.value++
-        activeDocId.value = null
-      }
+      await runFor(docId)
     } finally {
-      activeDocId.value = null
-      pumping = false
+      batchCompleted.value++
+      activeDocIds.value = activeDocIds.value.filter(id => id !== docId)
+      if (queued.value.length === 0 && activeDocIds.value.length === 0 && batchPrecount === 0) {
+        batchTotal.value = 0
+        batchCompleted.value = 0
+      } else {
+        void pump()
+      }
+    }
+  }
+
+  /**
+   * Kündigt an, dass als Nächstes `count` Belege eingereiht werden.
+   * Hält den Fortschrittsbalken offen, auch wenn Texterkennung und LLM
+   * zeitlich versetzt laufen.
+   */
+  function beginExtractionBatch(count: number): void {
+    if (count <= 0) return
+    const idle = queued.value.length === 0 && activeDocIds.value.length === 0 && batchPrecount === 0
+    if (idle) {
+      batchTotal.value = 0
+      batchCompleted.value = 0
+    }
+    batchPrecount += count
+    batchTotal.value += count
+  }
+
+  function endExtractionBatch(): void {
+    if (batchPrecount <= 0) {
+      batchPrecount = 0
+      return
+    }
+    batchTotal.value = Math.max(
+      batchCompleted.value + queued.value.length + activeDocIds.value.length,
+      batchTotal.value - batchPrecount,
+    )
+    batchPrecount = 0
+    if (queued.value.length === 0 && activeDocIds.value.length === 0) {
       batchTotal.value = 0
       batchCompleted.value = 0
     }
@@ -406,9 +472,10 @@ export function useDocumentExtraction() {
 
   /** Reiht einen Beleg zur Analyse ein. Mehrfachaufrufe für denselben Beleg sind unschädlich. */
   function queueExtraction(docId: string): void {
-    if (activeDocId.value === docId || queued.value.includes(docId)) return
+    if (activeDocIds.value.includes(docId) || queued.value.includes(docId)) return
     queued.value.push(docId)
-    batchTotal.value++
+    if (batchPrecount > 0) batchPrecount--
+    else batchTotal.value++
     void pump()
   }
 
@@ -419,8 +486,8 @@ export function useDocumentExtraction() {
     }
   }
 
-  const isExtracting = computed(() => activeDocId.value !== null)
-  const pendingExtractions = computed(() => queued.value.length + (activeDocId.value ? 1 : 0))
+  const isExtracting = computed(() => activeDocIds.value.length > 0)
+  const pendingExtractions = computed(() => queued.value.length + activeDocIds.value.length)
   const extractionProgressPercent = computed(() =>
     batchTotal.value > 0 ? Math.round((batchCompleted.value / batchTotal.value) * 100) : 0,
   )
@@ -428,7 +495,9 @@ export function useDocumentExtraction() {
   return {
     queueExtraction,
     queueMissing,
-    activeDocId,
+    beginExtractionBatch,
+    endExtractionBatch,
+    activeDocId: computed(() => activeDocIds.value[0] ?? null),
     isExtracting,
     pendingExtractions,
     batchTotal,

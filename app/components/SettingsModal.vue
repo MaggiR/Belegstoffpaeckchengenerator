@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { LlmProvider, ReasoningEffort } from '~/types'
+import type { LlmProvider, OllamaReasoningEffort, ReasoningEffort } from '~/types'
 import type { ConnectionTestResult } from '~/composables/useLlmSettings'
 
 const emit = defineEmits<{
@@ -7,9 +7,18 @@ const emit = defineEmits<{
 }>()
 
 const { settings, save, testConnection, defaultSettings, listOllamaModels } = useLlmSettings()
+const { isDark, setDark } = useDarkMode()
+
+type SettingsTab = 'general' | 'analysis'
+const activeTab = ref<SettingsTab>('general')
+
+const tabs: Array<{ id: SettingsTab; label: string }> = [
+  { id: 'general', label: 'Allgemein' },
+  { id: 'analysis', label: 'Beleganalyse' },
+]
 
 // Auf einer Kopie arbeiten, damit Abbrechen die bisherige Konfiguration behält.
-const draft = ref({ ...settings.value })
+const draft = ref({ ...defaultSettings(), ...settings.value })
 
 const testing = ref(false)
 const testResult = ref<ConnectionTestResult | null>(null)
@@ -85,6 +94,13 @@ const providers: Array<{ value: LlmProvider; label: string; hint: string }> = [
 ]
 
 const efforts: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high']
+const ollamaEfforts: Array<{ value: OllamaReasoningEffort; label: string }> = [
+  { value: '', label: 'nicht gesetzt' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'max', label: 'max' },
+]
 
 function selectProvider(provider: LlmProvider) {
   draft.value.provider = provider
@@ -102,12 +118,17 @@ async function runTest() {
 }
 
 function applyAndClose() {
-  save({ ...draft.value })
+  save({ ...draft.value, organizationName: draft.value.organizationName.trim() })
   emit('close')
 }
 
 function resetDraft() {
-  draft.value = defaultSettings()
+  if (activeTab.value === 'general') {
+    draft.value.organizationName = ''
+    return
+  }
+  const organizationName = draft.value.organizationName
+  draft.value = { ...defaultSettings(), organizationName }
   testResult.value = null
 }
 </script>
@@ -123,10 +144,12 @@ function resetDraft() {
           <div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
               <font-awesome-icon icon="gear" class="text-primary-500 w-4 h-4" />
-              Beleganalyse
+              Einstellungen
             </h3>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              Legt fest, welches Sprachmodell Titel, Korrespondent, Datum und Betrag aus Belegen ausliest.
+              {{ activeTab === 'general'
+                ? 'Parteigliederung und Darstellung.'
+                : 'Legt fest, welches Sprachmodell Titel, Belegtyp, Korrespondent, Datum und Betrag aus Belegen ausliest.' }}
             </p>
           </div>
           <button
@@ -138,7 +161,64 @@ function resetDraft() {
           </button>
         </div>
 
+        <div class="px-6 pt-4">
+          <div class="flex bg-gray-100 dark:bg-gray-900 rounded-lg p-0.5">
+            <button
+              v-for="tab in tabs"
+              :key="tab.id"
+              class="flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all"
+              :class="activeTab === tab.id
+                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-500 dark:text-gray-400'"
+              @click="activeTab = tab.id"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+        </div>
+
         <div class="px-6 py-5 overflow-auto space-y-5">
+          <template v-if="activeTab === 'general'">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Name der Parteigliederung</label>
+              <input
+                v-model="draft.organizationName"
+                type="text"
+                placeholder="FDP Kreisverband Darmstadt"
+                class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+              <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                Wird der Beleganalyse als Kontext mitgegeben, etwa um Aussteller und Empfänger besser zu unterscheiden.
+              </p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Darstellung</label>
+              <div class="flex bg-gray-100 dark:bg-gray-900 rounded-lg p-0.5">
+                <button
+                  class="flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5"
+                  :class="!isDark
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400'"
+                  @click="setDark(false)"
+                >
+                  <font-awesome-icon icon="sun" class="w-3.5 h-3.5" />
+                  Hell
+                </button>
+                <button
+                  class="flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5"
+                  :class="isDark
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400'"
+                  @click="setDark(true)"
+                >
+                  <font-awesome-icon icon="moon" class="w-3.5 h-3.5" />
+                  Dunkel
+                </button>
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
           <!-- Providerauswahl -->
           <div class="space-y-2">
             <label class="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
@@ -229,6 +309,20 @@ function resetDraft() {
                 {{ ollamaModelsError }}
               </p>
             </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Reasoning-Aufwand</label>
+              <select
+                v-model="draft.ollamaReasoningEffort"
+                class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                <option v-for="option in ollamaEfforts" :key="option.value || 'unset'" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+              <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                Wird als <code class="font-mono">think</code> an Ollama geschickt. „nicht gesetzt“ lässt das Feld weg.
+              </p>
+            </div>
           </div>
 
           <!-- OpenAI -->
@@ -315,6 +409,7 @@ function resetDraft() {
               <span>{{ testResult.message }}</span>
             </div>
           </div>
+          </template>
         </div>
 
         <!-- Fuß -->
