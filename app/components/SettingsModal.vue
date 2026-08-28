@@ -8,7 +8,7 @@ const emit = defineEmits<{
 
 useScrollLock(true)
 
-const { settings, save, testConnection, defaultSettings, listOllamaModels } = useLlmSettings()
+const { settings, save, testConnection, defaultSettings, listOllamaModels, listOpenAiModels } = useLlmSettings()
 const { isDark, setDark } = useDarkMode()
 
 type SettingsTab = 'general' | 'analysis'
@@ -84,9 +84,67 @@ watch(
   { immediate: true },
 )
 
+const openaiModels = ref<string[]>([])
+const openaiModelsLoading = ref(false)
+const openaiModelsError = ref<string | null>(null)
+let openaiFetchSeq = 0
+let openaiFetchTimer: ReturnType<typeof setTimeout> | null = null
+
+async function loadOpenAiModels(): Promise<void> {
+  if (draft.value.provider !== 'openai') return
+  const seq = ++openaiFetchSeq
+  if (!draft.value.openaiApiKey.trim()) {
+    openaiModels.value = []
+    openaiModelsError.value = 'Bitte einen API-Key angeben.'
+    openaiModelsLoading.value = false
+    return
+  }
+
+  openaiModelsLoading.value = true
+  openaiModelsError.value = null
+  const result = await listOpenAiModels(draft.value.openaiApiKey)
+  if (seq !== openaiFetchSeq) return
+
+  openaiModelsLoading.value = false
+  if (!result.ok) {
+    openaiModels.value = []
+    openaiModelsError.value = result.message ?? 'Modelle konnten nicht geladen werden.'
+    return
+  }
+
+  openaiModels.value = result.models
+  if (!result.models.length) {
+    openaiModelsError.value = 'Für diesen API-Key sind keine Chat-Modelle verfügbar.'
+    draft.value.openaiModel = ''
+    return
+  }
+  draft.value.openaiModel = pickOpenAiModel(result.models, draft.value.openaiModel)
+}
+
+function scheduleOpenAiModelFetch(): void {
+  if (openaiFetchTimer) clearTimeout(openaiFetchTimer)
+  openaiFetchTimer = setTimeout(() => {
+    void loadOpenAiModels()
+  }, 350)
+}
+
+watch(
+  () => [draft.value.provider, draft.value.openaiApiKey] as const,
+  ([provider]) => {
+    if (provider !== 'openai') {
+      if (openaiFetchTimer) clearTimeout(openaiFetchTimer)
+      return
+    }
+    scheduleOpenAiModelFetch()
+  },
+  { immediate: true },
+)
+
 onBeforeUnmount(() => {
   if (ollamaFetchTimer) clearTimeout(ollamaFetchTimer)
   ollamaFetchSeq += 1
+  if (openaiFetchTimer) clearTimeout(openaiFetchTimer)
+  openaiFetchSeq += 1
 })
 
 const providers: Array<{ value: LlmProvider; label: string; hint: string }> = [
@@ -350,12 +408,33 @@ function resetDraft() {
             </div>
             <div>
               <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Modell</label>
-              <input
-                v-model="draft.openaiModel"
-                type="text"
-                placeholder="gpt-5-luna"
-                class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              >
+              <div class="flex items-center gap-2">
+                <select
+                  v-model="draft.openaiModel"
+                  :disabled="openaiModelsLoading || !openaiModels.length"
+                  class="flex-1 min-w-0 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-60"
+                >
+                  <option v-if="!openaiModels.length" value="">
+                    {{ openaiModelsLoading ? 'Modelle werden geladen…' : 'Keine Modelle verfügbar' }}
+                  </option>
+                  <option v-for="name in openaiModels" :key="name" :value="name">{{ name }}</option>
+                </select>
+                <button
+                  class="p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 flex-shrink-0"
+                  title="Modellliste aktualisieren"
+                  :disabled="openaiModelsLoading"
+                  @click="loadOpenAiModels"
+                >
+                  <font-awesome-icon
+                    :icon="openaiModelsLoading ? 'spinner' : 'rotate-right'"
+                    :class="openaiModelsLoading ? 'animate-spin' : ''"
+                    class="w-3.5 h-3.5"
+                  />
+                </button>
+              </div>
+              <p v-if="openaiModelsError" class="text-[11px] text-red-600 dark:text-red-400 mt-1">
+                {{ openaiModelsError }}
+              </p>
             </div>
             <div>
               <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Reasoning-Aufwand</label>

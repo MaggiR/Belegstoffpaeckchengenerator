@@ -28,7 +28,7 @@ export interface ConnectionTestResult {
   message: string
 }
 
-export interface OllamaModelListResult {
+export interface ModelListResult {
   ok: boolean
   models: string[]
   message?: string
@@ -59,7 +59,7 @@ export function pickOllamaModel(models: string[], current: string): string {
   return models[0]
 }
 
-export async function listOllamaModels(base: string, token = ''): Promise<OllamaModelListResult> {
+export async function listOllamaModels(base: string, token = ''): Promise<ModelListResult> {
   const configured = normalizeBaseUrl(base)
   if (!configured) return { ok: false, models: [], message: 'Bitte eine Ollama-URL angeben.' }
 
@@ -81,6 +81,46 @@ export async function listOllamaModels(base: string, token = ''): Promise<Ollama
     return { ok: true, models: parseOllamaModelNames(await res.json()) }
   } catch {
     return { ok: false, models: [], message: describeOllamaFetchFailure(configured, 'get') }
+  }
+}
+
+/**
+ * `/v1/models` listet auch Embedding-, Audio- und Bildgenerierungsmodelle, die
+ * für die Beleganalyse unbrauchbar sind. Übrig bleiben die Chat-Familien.
+ */
+const OPENAI_NON_CHAT = /embedding|whisper|tts|audio|realtime|transcribe|image|dall-e|moderation|search|davinci|babbage|sora|instruct|codex/i
+
+function parseOpenAiModelNames(data: unknown): string[] {
+  const entries = (data as { data?: Array<{ id?: string }> })?.data ?? []
+  const names = entries
+    .map(entry => String(entry?.id ?? '').trim())
+    .filter(id => id && /^(?:gpt|o\d|chatgpt)/i.test(id) && !OPENAI_NON_CHAT.test(id))
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b, 'de'))
+}
+
+export function pickOpenAiModel(models: string[], current: string): string {
+  if (!models.length) return ''
+  const wanted = current.trim().toLowerCase()
+  return models.find(name => name.toLowerCase() === wanted) ?? models[0]
+}
+
+export async function listOpenAiModels(apiKey: string): Promise<ModelListResult> {
+  const key = apiKey.trim()
+  if (!key) return { ok: false, models: [], message: 'Bitte einen API-Key angeben.' }
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${key}` },
+    })
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, models: [], message: `OpenAI hat den API-Key abgelehnt (HTTP ${res.status}).` }
+    }
+    if (!res.ok) {
+      return { ok: false, models: [], message: `OpenAI antwortete mit HTTP ${res.status}.` }
+    }
+    return { ok: true, models: parseOpenAiModelNames(await res.json()) }
+  } catch {
+    return { ok: false, models: [], message: 'api.openai.com war nicht erreichbar. Prüfe die Internetverbindung.' }
   }
 }
 
@@ -355,16 +395,18 @@ export function useLlmSettings() {
       const key = candidate.openaiApiKey.trim()
       if (!key) return { ok: false, message: 'Bitte einen API-Key angeben.' }
 
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      })
-      if (res.status === 401) {
-        return { ok: false, message: 'Der API-Key wurde abgelehnt.' }
+      const listed = await listOpenAiModels(key)
+      if (!listed.ok) {
+        return { ok: false, message: listed.message ?? 'OpenAI war nicht erreichbar.' }
       }
-      if (!res.ok) {
-        return { ok: false, message: `OpenAI antwortete mit HTTP ${res.status}.` }
+      const model = candidate.openaiModel.trim()
+      if (!listed.models.some(name => name.toLowerCase() === model.toLowerCase())) {
+        return {
+          ok: false,
+          message: `Verbindung steht, aber "${model}" ist für diesen API-Key nicht verfügbar.`,
+        }
       }
-      return { ok: true, message: 'Verbindung zu OpenAI steht.' }
+      return { ok: true, message: `Verbindung zu OpenAI steht, Modell "${model}" ist einsatzbereit.` }
     } catch (e: any) {
       if (candidate.provider === 'ollama') {
         const base = normalizeBaseUrl(candidate.ollamaBaseUrl)
@@ -388,5 +430,6 @@ export function useLlmSettings() {
     defaultSettings,
     fetchOllama,
     listOllamaModels,
+    listOpenAiModels,
   }
 }

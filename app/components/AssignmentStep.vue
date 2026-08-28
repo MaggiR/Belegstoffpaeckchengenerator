@@ -231,6 +231,7 @@ async function processFile(file: File, idx: number): Promise<DocumentFile> {
     totalAmount: null,
     documentKind: null,
     extractionStatus: 'pending',
+    analyzed: false,
   }
 
   if (isPdf) {

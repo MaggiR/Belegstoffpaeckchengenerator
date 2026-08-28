@@ -32,10 +32,17 @@ const {
 
 const {
   pendingExtractions,
+  queued,
   batchTotal,
   batchCompleted,
   extractionProgressPercent,
+  cancelExtractions,
 } = useDocumentExtraction()
+
+const queuedIds = computed(() => new Set(queued.value))
+function isQueued(docId: string): boolean {
+  return queuedIds.value.has(docId)
+}
 const { isConfigured } = useLlmSettings()
 
 const dropActive = ref(false)
@@ -77,7 +84,7 @@ const uploadPercent = computed(() =>
 
 /** Belege, deren Auswertung noch aussteht oder fehlgeschlagen ist. */
 const notAnalyzedCount = computed(() =>
-  documents.value.filter(d => d.extractionStatus !== 'done' && d.extractionStatus !== 'running').length,
+  documents.value.filter(d => !d.analyzed && d.extractionStatus !== 'running').length,
 )
 
 function togglePanel(panel: 'filter' | 'sort') {
@@ -186,27 +193,40 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
         {{ unassignedDocuments.length }}
       </span>
       <div
-        v-if="batchTotal > 0"
-        class="ml-auto flex items-center gap-1.5 min-w-[88px]"
-        :title="`${batchCompleted} von ${batchTotal} Belegen analysiert`"
+        v-if="batchTotal > 0 || pendingExtractions > 0"
+        class="ml-auto flex items-center gap-1.5"
       >
-        <div class="flex-1 h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-          <div
-            class="h-full rounded-full bg-gradient-to-r from-primary-400 to-primary-600 transition-all duration-500 ease-out"
-            :style="{ width: `${extractionProgressPercent}%` }"
-          />
+        <div
+          v-if="batchTotal > 0"
+          class="flex items-center gap-1.5 min-w-[88px]"
+          :title="`${batchCompleted} von ${batchTotal} Belegen analysiert`"
+        >
+          <div class="flex-1 h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div
+              class="h-full rounded-full bg-gradient-to-r from-primary-400 to-primary-600 transition-all duration-500 ease-out"
+              :style="{ width: `${extractionProgressPercent}%` }"
+            />
+          </div>
+          <span class="text-[10px] font-medium tabular-nums text-primary-600 dark:text-primary-400">
+            {{ batchCompleted }}/{{ batchTotal }}
+          </span>
         </div>
-        <span class="text-[10px] font-medium tabular-nums text-primary-600 dark:text-primary-400">
-          {{ batchCompleted }}/{{ batchTotal }}
-        </span>
+        <font-awesome-icon
+          v-else
+          icon="spinner"
+          class="animate-spin w-2.5 h-2.5 text-primary-600 dark:text-primary-400"
+          title="Beleg wird analysiert"
+        />
+        <button
+          v-if="pendingExtractions > 0"
+          class="inline-flex items-center justify-center w-4 h-4 rounded-full text-gray-500 hover:text-red-600 hover:bg-red-50 dark:text-gray-400 dark:hover:text-red-400 dark:hover:bg-red-900/30 transition-colors"
+          title="Analyse abbrechen"
+          aria-label="Analyse abbrechen"
+          @click="cancelExtractions"
+        >
+          <font-awesome-icon icon="xmark" class="w-2.5 h-2.5" />
+        </button>
       </div>
-      <span
-        v-else-if="pendingExtractions > 0"
-        class="ml-auto inline-flex items-center gap-1 text-[10px] font-medium text-primary-600 dark:text-primary-400"
-        title="Beleg wird analysiert"
-      >
-        <font-awesome-icon icon="spinner" class="animate-spin w-2.5 h-2.5" />
-      </span>
     </div>
 
     <input
@@ -569,7 +589,15 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
               Analyse
             </span>
             <span
-              v-else-if="doc.extractionStatus !== 'done' && doc.extractionStatus !== 'failed'"
+              v-else-if="isQueued(doc.id)"
+              class="inline-flex items-center gap-1 text-[10px] font-medium text-primary-600 dark:text-primary-400"
+              title="Beleg ist zur Analyse eingereiht"
+            >
+              <font-awesome-icon icon="hourglass-half" class="w-2.5 h-2.5" />
+              Warteschlange
+            </span>
+            <span
+              v-else-if="!doc.analyzed"
               class="inline-flex items-center gap-1 text-[10px] font-medium text-gray-400 dark:text-gray-500"
               :title="doc.extractionError || 'Noch nicht per Sprachmodell ausgewertet'"
             >
@@ -587,7 +615,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
 
           <!-- Fehlerursache im Klartext statt nur als Tooltip -->
           <div
-            v-if="doc.extractionStatus === 'failed'"
+            v-if="doc.extractionStatus === 'failed' && !isQueued(doc.id)"
             class="mt-1.5 rounded-lg bg-red-50 dark:bg-red-900/20 px-2 py-1.5 flex items-start gap-1.5"
           >
             <font-awesome-icon
@@ -623,7 +651,7 @@ defineExpose({ openFilePicker: () => uploadInputRef.value?.click() })
             <font-awesome-icon icon="pen" class="w-2.5 h-2.5" />
           </button>
           <button
-            v-if="doc.extractionStatus !== 'running'"
+            v-if="doc.extractionStatus !== 'running' && !isQueued(doc.id)"
             class="w-5 h-5 rounded-md text-gray-400 hover:text-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/30 flex items-center justify-center"
             title="Neu analysieren"
             @click.stop="emit('reanalyze', doc.id)"

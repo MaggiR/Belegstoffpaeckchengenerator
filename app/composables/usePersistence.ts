@@ -128,6 +128,7 @@ interface StoredFileEntry {
   documentKind?: DocumentKind | null
   extractionStatus?: ExtractionStatus
   extractionError?: string
+  analyzed?: boolean
   data: ArrayBuffer
 }
 
@@ -227,6 +228,7 @@ export function usePersistence() {
         documentKind: d.documentKind,
         extractionStatus: d.extractionStatus,
         extractionError: d.extractionError,
+        analyzed: d.analyzed,
       })),
     }
   }
@@ -321,6 +323,7 @@ export function usePersistence() {
             documentKind: doc.documentKind,
             extractionStatus: doc.extractionStatus,
             extractionError: doc.extractionError,
+            analyzed: doc.analyzed,
             data: await doc.file.arrayBuffer(),
           }
           await idbPut(FILES_STORE, entry)
@@ -336,6 +339,7 @@ export function usePersistence() {
           || stored.documentKind !== doc.documentKind
           || stored.extractionStatus !== doc.extractionStatus
           || stored.extractionError !== doc.extractionError
+          || stored.analyzed !== doc.analyzed
         ) {
           // Metadaten aktualisieren (z. B. nach Entschlüsselung oder LLM-Analyse).
           await idbPut(FILES_STORE, {
@@ -351,6 +355,7 @@ export function usePersistence() {
             documentKind: doc.documentKind,
             extractionStatus: doc.extractionStatus,
             extractionError: doc.extractionError,
+            analyzed: doc.analyzed,
           })
         }
       }
@@ -438,6 +443,9 @@ export function usePersistence() {
         // Belege aus Zuständen vor der LLM-Auswertung gelten als "nicht analysiert",
         // damit sie in der Oberfläche nachgeholt werden können.
         const extractionStatus = stored?.extractionStatus ?? meta.extractionStatus ?? 'skipped'
+        const analyzed = Boolean(
+          stored?.analyzed ?? meta.analyzed ?? extractionStatus === 'done',
+        )
         let documentKind = parseDocumentKind(stored?.documentKind ?? meta.documentKind)
         // Alter Default "Sonstige" bei nicht analysierten Belegen nicht als Typ anzeigen.
         if (extractionStatus !== 'done' && documentKind === 'other') documentKind = null
@@ -457,6 +465,7 @@ export function usePersistence() {
           documentKind,
           extractionStatus,
           extractionError: stored?.extractionError ?? meta.extractionError,
+          analyzed,
         }
       })
 

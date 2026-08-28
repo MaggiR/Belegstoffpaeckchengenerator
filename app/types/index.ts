@@ -40,6 +40,12 @@ export interface DocumentFile {
   documentKind: DocumentKind | null
   extractionStatus: ExtractionStatus
   extractionError?: string
+  /**
+   * War die Auswertung einmal erfolgreich, bleibt das wahr – auch wenn später
+   * neu analysiert oder abgebrochen wird. Die Oberfläche zeigt dann nicht
+   * erneut „nicht analysiert“.
+   */
+  analyzed: boolean
 }
 
 /** Vom LLM geliefertes und validiertes Ergebnis einer Belegauswertung. */

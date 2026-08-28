@@ -182,9 +182,9 @@ export function useAppState() {
     const { status, type, documentKind, amountMin, amountMax, dateFrom, dateTo } = docFilters.value
 
     if (status === 'analyzed') {
-      result = result.filter(d => d.extractionStatus === 'done')
+      result = result.filter(d => d.analyzed)
     } else if (status === 'unanalyzed') {
-      result = result.filter(d => d.extractionStatus !== 'done' && d.extractionStatus !== 'failed')
+      result = result.filter(d => !d.analyzed && d.extractionStatus !== 'failed')
     } else if (status === 'failed') {
       result = result.filter(d => d.extractionStatus === 'failed')
     }
@@ -412,7 +412,9 @@ export function useAppState() {
   function updateDocument(docId: string, patch: Partial<DocumentFile>) {
     const doc = documents.value.find(d => d.id === docId)
     if (!doc) return
+    const alreadyAnalyzed = doc.analyzed
     Object.assign(doc, patch)
+    if (alreadyAnalyzed || doc.extractionStatus === 'done') doc.analyzed = true
   }
 
   function clearEditorState() {

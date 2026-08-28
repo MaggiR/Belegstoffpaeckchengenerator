@@ -56,6 +56,7 @@ import {
   faCircleInfo,
   faBrain,
   faEllipsisVertical,
+  faHourglassHalf,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -114,6 +115,7 @@ library.add(
   faCircleInfo,
   faBrain,
   faEllipsisVertical,
+  faHourglassHalf,
 )
 
 export default defineNuxtPlugin((nuxtApp) => {

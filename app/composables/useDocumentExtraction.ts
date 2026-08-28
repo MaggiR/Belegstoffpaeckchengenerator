@@ -1,4 +1,4 @@
-import type { DocumentExtraction, DocumentFile, LlmSettings } from '~/types'
+import type { DocumentExtraction, DocumentFile, LlmProvider, LlmSettings } from '~/types'
 import { parseDocumentKind } from '~/types'
 
 /** Vision-Modelle brauchen auf CPU-Hardware leicht mehrere Minuten pro Beleg. */
@@ -63,12 +63,27 @@ Antworte ausschließlich mit einem JSON-Objekt mit genau diesen fünf Schlüssel
 
 const queued = ref<string[]>([])
 const activeDocIds = ref<string[]>([])
+/** Controller der laufenden Anfragen, damit ein Abbruch sie wirklich beendet. */
+const activeControllers = new Map<string, AbortController>()
+/** Vom Nutzer abgebrochene Belege – ihr AbortError ist kein Fehler. */
+const cancelledDocIds = new Set<string>()
 const batchTotal = ref(0)
 const batchCompleted = ref(0)
 /** Noch nicht eingereihte Plätze einer angekündigten Upload-/Analysewelle. */
 let batchPrecount = 0
-/** Gleichzeitige Beleganalysen. Der Browser und der App-Proxy halten das aus. */
-const MAX_CONCURRENT_EXTRACTIONS = 50
+/**
+ * Gleichzeitige Beleganalysen je Anbieter.
+ *
+ * Der Ollama-Wert muss zu OLLAMA_NUM_PARALLEL des Servers passen (dort: 2).
+ * Mehr Anfragen als Slots bringen keinen Durchsatz, sondern warten in der
+ * Warteschlange – während ihr Timeout schon läuft. Genau daran scheiterte
+ * zuvor fast ein ganzer Stapel, obwohl der Server gesund war.
+ * OpenAI verträgt dagegen mehrere Anfragen gleichzeitig.
+ */
+const MAX_CONCURRENT_EXTRACTIONS: Record<LlmProvider, number> = {
+  ollama: 10,
+  openai: 4,
+}
 
 export function fallbackTitleFromName(name: string): string {
   const withoutExtension = name.replace(/\.[^.]+$/, '')
@@ -148,8 +163,7 @@ export function normalizeExtraction(raw: any, fallbackTitle: string): DocumentEx
   }
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController()
+async function fetchWithTimeout(url: string, init: RequestInit, controller: AbortController): Promise<Response> {
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
     return await fetch(url, { ...init, signal: controller.signal })
@@ -177,20 +191,64 @@ function describeNetworkFailure(e: any, provider: 'Ollama' | 'OpenAI', target: s
   return `${provider}-Aufruf fehlgeschlagen: ${e?.message || 'unbekannter Fehler'}`
 }
 
-/** Holt die Fehlerbeschreibung aus dem Antwortkörper, soweit vorhanden. */
-async function readErrorDetail(res: Response): Promise<string> {
+/**
+ * Proxys wie nginx/OpenResty antworten mit einer HTML-Fehlerseite. Ungefiltert
+ * landet dieses Markup in der Oberfläche, deshalb bleibt nur der Text übrig.
+ */
+function stripHtml(raw: string): string {
+  if (!/<\/?(?:html|head|body|title|center|h1|hr|pre|p)\b/i.test(raw)) return raw
+  return raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/** Holt die Fehlerbeschreibung aus dem Antwortkörper als Rohtext, soweit vorhanden. */
+async function readErrorMessage(res: Response): Promise<string> {
   try {
     const text = await res.text()
     if (!text) return ''
     try {
       const parsed = JSON.parse(text)
       const message = parsed?.error?.message ?? parsed?.error ?? parsed?.message
-      if (typeof message === 'string' && message.trim()) return ` – ${message.trim().slice(0, 300)}`
+      if (typeof message === 'string' && message.trim()) return message.trim()
     } catch {}
-    return ` – ${text.trim().slice(0, 300)}`
+    return stripHtml(text.trim())
   } catch {
     return ''
   }
+}
+
+function detailSuffix(raw: string): string {
+  return raw ? ` – ${raw.slice(0, 300)}` : ''
+}
+
+const MEMORY_ERROR_PATTERNS = [
+  /out of memory/i,
+  /\boom\b/i,
+  /cuda[_ ]?malloc/i,
+  /hip[_ ]?malloc/i,
+  /failed to allocate/i,
+  /cannot allocate/i,
+  /ggml_gallocr/i,
+  /ggml_backend_buffer/i,
+  /not enough (?:free )?(?:memory|space)/i,
+  /requires more system memory/i,
+  /insufficient memory/i,
+  /no memory/i,
+]
+
+/**
+ * Speichermangel im Model-Runner ist der häufigste 500er bei Vision-Modellen:
+ * mehrere hochauflösende Seitenbilder lassen den Grafikspeicher überlaufen.
+ * Der rohe GGML-/CUDA-Text ist für Nutzer unbrauchbar, daher eine eigene Meldung.
+ */
+function describeModelMemoryFailure(raw: string, model: string, pageCount: number): string | null {
+  if (!raw || !MEMORY_ERROR_PATTERNS.some(pattern => pattern.test(raw))) return null
+
+  const pages = pageCount === 1
+    ? 'ein Seitenbild'
+    : `${pageCount} Seitenbilder`
+  return `Dem Ollama-Server ist der Grafikspeicher ausgegangen, während "${model}" den Beleg mit ${pages} verarbeitet hat. `
+    + 'Abhilfe auf dem Server: andere Modelle entladen, ein kleineres bzw. stärker quantisiertes Vision-Modell verwenden '
+    + 'oder das Kontextfenster verkleinern. Danach lässt sich der Beleg erneut analysieren.'
 }
 
 function buildUserText(fileName: string, organizationName: string): string {
@@ -199,13 +257,18 @@ function buildUserText(fileName: string, organizationName: string): string {
   return `${buildPrompt(org)}\n\n${orgBlock}Dateiname: ${fileName}\n\nBeurteile den Beleg anhand der mitgelieferten Seitenbilder.`
 }
 
-async function callOllama(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
+async function callOllama(
+  settings: LlmSettings,
+  text: string,
+  dataUrls: string[],
+  controller: AbortController,
+): Promise<string> {
   const configured = settings.ollamaBaseUrl
   const model = settings.ollamaModel.trim()
-  const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
   let res: Response
+  let errorMessage: string | null = null
   try {
     const body: Record<string, unknown> = {
       model,
@@ -231,8 +294,14 @@ async function callOllama(settings: LlmSettings, text: string, dataUrls: string[
 
     res = await send(body)
     if (!res.ok && effort && (res.status === 400 || res.status === 422 || res.status === 500)) {
-      const { think: _ignored, ...withoutThink } = body
-      res = await send(withoutThink)
+      // Body nur hier lesen, damit der zweite Versuch die Seitenbilder nicht
+      // umsonst erneut hochlädt, wenn "think" gar nicht das Problem war.
+      errorMessage = await readErrorMessage(res)
+      if (/think/i.test(errorMessage)) {
+        const { think: _ignored, ...withoutThink } = body
+        res = await send(withoutThink)
+        errorMessage = null
+      }
     }
   } catch (e) {
     throw new Error(describeNetworkFailure(e, 'Ollama', configured))
@@ -241,19 +310,31 @@ async function callOllama(settings: LlmSettings, text: string, dataUrls: string[
   }
 
   if (!res.ok) {
-    const detail = await readErrorDetail(res)
+    const raw = errorMessage ?? await readErrorMessage(res)
+    const detail = detailSuffix(raw)
     if (res.status === 401 || res.status === 403) {
       throw new Error(`Ollama hat den Bearer-Token abgelehnt (HTTP ${res.status}).${detail}`)
     }
     if (res.status === 404) {
       throw new Error(`Ollama kennt das Modell "${model}" nicht (HTTP 404). Mit "ollama pull ${model}" laden oder den Namen in den Einstellungen anpassen.${detail}`)
     }
+    if (res.status === 504 || res.status === 408 || res.status === 524) {
+      throw new Error(
+        `Ein Proxy vor Ollama hat die Anfrage nach Zeitüberschreitung abgebrochen (HTTP ${res.status}), bevor "${model}" fertig war. `
+        + 'Das Modell rechnet länger als der Proxy wartet: entweder das Lese-Timeout dort erhöhen (bei nginx/OpenResty "proxy_read_timeout") '
+        + 'oder ein schnelleres Modell verwenden.',
+      )
+    }
+    const memoryFailure = describeModelMemoryFailure(raw, model, dataUrls.length)
+    if (memoryFailure) throw new Error(memoryFailure)
     throw new Error(`Ollama antwortete mit HTTP ${res.status}${detail}`)
   }
 
   const data = await res.json()
   if (typeof data?.error === 'string' && data.error.trim()) {
-    throw new Error(`Ollama meldet: ${data.error.trim().slice(0, 300)}`)
+    const raw = data.error.trim()
+    const memoryFailure = describeModelMemoryFailure(raw, model, dataUrls.length)
+    throw new Error(memoryFailure ?? `Ollama meldet: ${raw.slice(0, 300)}`)
   }
   const content = data?.message?.content
   if (typeof content !== 'string' || !content.trim()) {
@@ -262,7 +343,12 @@ async function callOllama(settings: LlmSettings, text: string, dataUrls: string[
   return content
 }
 
-async function callOpenAi(settings: LlmSettings, text: string, dataUrls: string[]): Promise<string> {
+async function callOpenAi(
+  settings: LlmSettings,
+  text: string,
+  dataUrls: string[],
+  controller: AbortController,
+): Promise<string> {
   const body: Record<string, any> = {
     model: settings.openaiModel.trim(),
     reasoning_effort: settings.openaiReasoningEffort,
@@ -286,7 +372,7 @@ async function callOpenAi(settings: LlmSettings, text: string, dataUrls: string[
       Authorization: `Bearer ${settings.openaiApiKey.trim()}`,
     },
     body: JSON.stringify(payload),
-  })
+  }, controller)
 
   let res: Response
   try {
@@ -301,7 +387,7 @@ async function callOpenAi(settings: LlmSettings, text: string, dataUrls: string[
   }
 
   if (!res.ok) {
-    const detail = await readErrorDetail(res)
+    const detail = detailSuffix(await readErrorMessage(res))
     if (res.status === 401) {
       throw new Error(`OpenAI hat den API-Key abgelehnt (HTTP 401).${detail}`)
     }
@@ -354,8 +440,10 @@ export function useDocumentExtraction() {
     }
   }
 
-  async function extractFromDocument(doc: DocumentFile): Promise<DocumentExtraction> {
+  async function extractFromDocument(doc: DocumentFile, controller: AbortController): Promise<DocumentExtraction> {
     const images = await collectPageImages(doc)
+    // Das Rendern der Seiten lässt sich nicht unterbrechen; danach aber schon.
+    if (controller.signal.aborted) throw new DOMException('Abgebrochen', 'AbortError')
     if (images.length === 0) {
       throw new Error('Der Beleg ließ sich nicht als Seitenbild lesen.')
     }
@@ -363,8 +451,8 @@ export function useDocumentExtraction() {
     const text = buildUserText(doc.name, settings.value.organizationName ?? '')
 
     const content = settings.value.provider === 'openai'
-      ? await callOpenAi(settings.value, text, images)
-      : await callOllama(settings.value, text, images)
+      ? await callOpenAi(settings.value, text, images, controller)
+      : await callOllama(settings.value, text, images, controller)
 
     let parsed: any
     try {
@@ -392,8 +480,10 @@ export function useDocumentExtraction() {
     }
 
     updateDocument(docId, { extractionStatus: 'running', extractionError: undefined })
+    const controller = new AbortController()
+    activeControllers.set(docId, controller)
     try {
-      const result = await extractFromDocument(doc)
+      const result = await extractFromDocument(doc, controller)
       updateDocument(docId, {
         title: result.title,
         correspondent: result.correspondent,
@@ -404,16 +494,30 @@ export function useDocumentExtraction() {
         extractionError: undefined,
       })
     } catch (e: any) {
-      console.warn(`Beleganalyse fehlgeschlagen für "${doc.name}":`, e)
-      updateDocument(docId, {
-        extractionStatus: 'failed',
-        extractionError: e?.message || 'Analyse fehlgeschlagen',
-      })
+      // Abbruch durch den Nutzer: einmal erfolgreich ausgewertete Belege behalten
+      // ihren Stand, alle anderen gelten wieder als nicht analysiert.
+      if (cancelledDocIds.has(docId)) {
+        const current = documents.value.find(d => d.id === docId)
+        updateDocument(docId, {
+          extractionStatus: current?.analyzed ? 'done' : 'pending',
+          extractionError: undefined,
+        })
+      } else {
+        console.warn(`Beleganalyse fehlgeschlagen für "${doc.name}":`, e)
+        updateDocument(docId, {
+          extractionStatus: 'failed',
+          extractionError: e?.message || 'Analyse fehlgeschlagen',
+        })
+      }
+    } finally {
+      activeControllers.delete(docId)
+      cancelledDocIds.delete(docId)
     }
   }
 
   async function pump(): Promise<void> {
-    while (queued.value.length > 0 && activeDocIds.value.length < MAX_CONCURRENT_EXTRACTIONS) {
+    const limit = MAX_CONCURRENT_EXTRACTIONS[settings.value.provider] ?? 1
+    while (queued.value.length > 0 && activeDocIds.value.length < limit) {
       const next = queued.value.shift()!
       activeDocIds.value = [...activeDocIds.value, next]
       void runWorker(next)
@@ -475,6 +579,31 @@ export function useDocumentExtraction() {
     void pump()
   }
 
+  /**
+   * Bricht die laufende Analyse ab: die Warteschlange wird geleert und die
+   * offenen Anfragen werden abgebrochen. Einmal ausgewertete Belege behalten
+   * ihren Stand; nur noch nie ausgewertete gelten danach als nicht analysiert.
+   */
+  function cancelExtractions(): void {
+    for (const docId of queued.value) {
+      const doc = documents.value.find(d => d.id === docId)
+      updateDocument(docId, {
+        extractionStatus: doc?.analyzed ? 'done' : 'pending',
+        extractionError: undefined,
+      })
+    }
+    queued.value = []
+    batchPrecount = 0
+
+    for (const [docId, controller] of activeControllers) {
+      cancelledDocIds.add(docId)
+      controller.abort()
+    }
+
+    batchTotal.value = 0
+    batchCompleted.value = 0
+  }
+
   function queueMissing(): void {
     for (const doc of documents.value) {
       if (doc.extractionStatus === 'done' || doc.extractionStatus === 'running') continue
@@ -501,11 +630,13 @@ export function useDocumentExtraction() {
     queueExtraction,
     queueMissing,
     queueReanalyzeAll,
+    cancelExtractions,
     beginExtractionBatch,
     endExtractionBatch,
     activeDocId: computed(() => activeDocIds.value[0] ?? null),
     isExtracting,
     pendingExtractions,
+    queued,
     batchTotal,
     batchCompleted,
     extractionProgressPercent,
