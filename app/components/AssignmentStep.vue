@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DocumentFile } from '~/types'
+import type { DocumentFile, ImportBookingFilter } from '~/types'
 import { PdfPasswordRequiredError } from '~/composables/usePdfUtils'
 import { fallbackTitleFromName } from '~/composables/useDocumentExtraction'
 
@@ -33,12 +33,12 @@ const {
   clearAssignmentHistory,
 } = useAppState()
 
-const { createBookings } = useTableParser()
+const { createBookings, applyImportBookingFilter, mergeBookingAssignments, countLostAssignments } = useTableParser()
 const { generateThumbnail, isPdfEncrypted } = usePdfUtils()
 const { queueExtraction, queueMissing, beginExtractionBatch, endExtractionBatch } = useDocumentExtraction()
 const { uploadRequest, showUnassignAllConfirm, confirmUnassignAll } = useDocumentActions()
 
-useScrollLock(showUnassignAllConfirm)
+useScrollLock(computed(() => showUnassignAllConfirm.value || showMappingLossConfirm.value))
 
 const passwordDialog = ref<{ doc: DocumentFile; wrongPassword: boolean } | null>(null)
 
@@ -188,32 +188,43 @@ function openColumnMapper() {
   showColumnMapper.value = true
 }
 
-function applyMapping(importFilters?: { dateFrom: string | null; dateTo: string | null; direction: 'all' | 'incoming' | 'outgoing' }) {
-  let created = createBookings(allTableRows.value, columnMapping.value)
+const showMappingLossConfirm = ref(false)
+const pendingMergedBookings = ref<ReturnType<typeof createBookings> | null>(null)
+const mappingLoss = ref({ bookingCount: 0, documentCount: 0 })
 
-  if (importFilters) {
-    if (importFilters.direction === 'incoming') {
-      created = created.filter(b => b.amount > 0)
-    } else if (importFilters.direction === 'outgoing') {
-      created = created.filter(b => b.amount < 0)
-    }
-    if (importFilters.dateFrom) {
-      const from = new Date(importFilters.dateFrom)
-      from.setHours(0, 0, 0, 0)
-      created = created.filter(b => b.date && b.date >= from)
-    }
-    if (importFilters.dateTo) {
-      const to = new Date(importFilters.dateTo)
-      to.setHours(23, 59, 59, 999)
-      created = created.filter(b => b.date && b.date <= to)
-    }
-  }
-
-  if (created.length > 0) {
-    bookings.value = created
-    clearAssignmentHistory()
-  }
+function commitMergedBookings(merged: ReturnType<typeof createBookings>): void {
+  bookings.value = merged
+  clearAssignmentHistory()
+  pendingMergedBookings.value = null
+  showMappingLossConfirm.value = false
   showColumnMapper.value = false
+}
+
+function applyMapping(importFilters?: ImportBookingFilter) {
+  const created = applyImportBookingFilter(
+    createBookings(allTableRows.value, columnMapping.value),
+    importFilters,
+  )
+  const merged = mergeBookingAssignments(bookings.value, created)
+  const loss = countLostAssignments(bookings.value, merged)
+
+  if (loss.documentCount > 0) {
+    pendingMergedBookings.value = merged
+    mappingLoss.value = loss
+    showMappingLossConfirm.value = true
+    return
+  }
+
+  commitMergedBookings(merged)
+}
+
+function confirmMappingLoss() {
+  if (pendingMergedBookings.value) commitMergedBookings(pendingMergedBookings.value)
+}
+
+function cancelMappingLoss() {
+  pendingMergedBookings.value = null
+  showMappingLossConfirm.value = false
 }
 
 async function processFile(file: File, idx: number): Promise<DocumentFile> {
@@ -543,7 +554,7 @@ onBeforeUnmount(() => {
           :mapping="columnMapping"
           @update:mapping="columnMapping = $event"
           @apply="applyMapping"
-          @close="showColumnMapper = false"
+          @close="cancelMappingLoss(); showColumnMapper = false"
         />
       </Transition>
     </Teleport>
@@ -616,6 +627,46 @@ onBeforeUnmount(() => {
               Alle lösen
             </button>
           </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- Bestätigungsdialog: Filter löst zugeordnete Belege -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div
+          v-if="showMappingLossConfirm"
+          class="fixed inset-0 bg-gray-900/40 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center z-[110]"
+          @click.self="cancelMappingLoss"
+        >
+          <div class="modal-panel bg-white dark:bg-gray-800 rounded-xl p-6 shadow-2xl max-w-md mx-4">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+              Zugeordnete Belege lösen?
+            </h3>
+            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">
+              Der neue Filter entfernt
+              {{ mappingLoss.bookingCount === 1 ? 'eine Buchung' : `${mappingLoss.bookingCount} Buchungen` }}.
+              Dabei
+              {{ mappingLoss.documentCount === 1
+                ? 'wird ein zugeordneter Beleg gelöst und erscheint wieder in der Belege-Spalte.'
+                : `werden ${mappingLoss.documentCount} zugeordnete Belege gelöst und erscheinen wieder in der Belege-Spalte.` }}
+              Alle übrigen Zuordnungen bleiben erhalten.
+            </p>
+            <div class="flex justify-end gap-2">
+              <button
+                class="px-4 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                @click="cancelMappingLoss"
+              >
+                Abbrechen
+              </button>
+              <button
+                class="px-4 py-2 text-sm rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition-colors"
+                @click="confirmMappingLoss"
+              >
+                Filter anwenden
+              </button>
+            </div>
           </div>
         </div>
       </Transition>

@@ -1,11 +1,5 @@
 <script setup lang="ts">
-import type { ColumnMapping } from '~/types'
-
-export interface ImportFilter {
-  dateFrom: string | null
-  dateTo: string | null
-  direction: 'all' | 'incoming' | 'outgoing'
-}
+import type { ColumnMapping, ImportBookingFilter } from '~/types'
 
 const props = defineProps<{
   headers: string[]
@@ -18,7 +12,7 @@ useScrollLock(true)
 
 const emit = defineEmits<{
   'update:mapping': [mapping: ColumnMapping]
-  'apply': [filters: ImportFilter]
+  'apply': [filters: ImportBookingFilter]
   'close': []
 }>()
 

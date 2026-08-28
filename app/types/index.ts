@@ -7,6 +7,8 @@ export interface Booking {
   documentIds: string[]
   noDocRequired: boolean
   verified: boolean
+  /** Zeilenindex in der importierten Tabelle – bleibt über Neuaufbau und Filter stabil. */
+  sourceRowIndex?: number
 }
 
 /**
@@ -118,6 +120,13 @@ export interface ColumnMapping {
 
 export type ViewMode = 'list' | 'tile'
 export type FilterDirection = 'all' | 'incoming' | 'outgoing'
+
+/** Filter im Dialog „Buchungen anpassen“ / Spaltenzuordnung. */
+export interface ImportBookingFilter {
+  dateFrom: string | null
+  dateTo: string | null
+  direction: FilterDirection
+}
 export type FilterDocStatus = 'all' | 'with' | 'without' | 'required' | 'not-required'
 export type SortField = 'date' | 'amount'
 export type SortOrder = 'asc' | 'desc'

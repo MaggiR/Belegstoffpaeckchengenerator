@@ -1,5 +1,5 @@
 import Papa from 'papaparse'
-import type { Booking, ColumnMapping } from '~/types'
+import type { Booking, ColumnMapping, ImportBookingFilter } from '~/types'
 
 const KNOWN_DATE_COLUMNS = ['datum', 'buchungsdatum', 'valuta', 'wertstellung', 'date', 'buchungstag']
 const KNOWN_AMOUNT_COLUMNS = ['betrag', 'umsatz', 'wert', 'amount', 'soll', 'haben', 'betrag (eur)', 'betrag in eur']
@@ -97,25 +97,108 @@ export function useTableParser() {
     rows: Record<string, string>[],
     mapping: ColumnMapping,
   ): Booking[] {
-    return rows
-      .filter(row => {
-        const hasDate = mapping.date && row[mapping.date]?.trim()
-        const hasAmount = mapping.amount && row[mapping.amount]?.trim()
-        return hasDate || hasAmount
+    const result: Booking[] = []
+    rows.forEach((row, sourceRowIndex) => {
+      const hasDate = mapping.date && row[mapping.date]?.trim()
+      const hasAmount = mapping.amount && row[mapping.amount]?.trim()
+      if (!hasDate && !hasAmount) return
+
+      const amount = mapping.amount ? parseAmount(row[mapping.amount] || '') : 0
+      result.push({
+        id: `booking-row-${sourceRowIndex}`,
+        sourceRowIndex,
+        date: mapping.date ? parseDate(row[mapping.date] || '') : null,
+        amount,
+        description: mapping.description ? (row[mapping.description] || '').trim() : '',
+        remarks: mapping.remarks ? (row[mapping.remarks] || '').trim() : '',
+        documentIds: [],
+        noDocRequired: amount > 0,
+        verified: false,
       })
-      .map((row, idx) => {
-        const amount = mapping.amount ? parseAmount(row[mapping.amount] || '') : 0
-        return {
-          id: `booking-${idx}-${Date.now()}`,
-          date: mapping.date ? parseDate(row[mapping.date] || '') : null,
-          amount,
-          description: mapping.description ? (row[mapping.description] || '').trim() : '',
-          remarks: mapping.remarks ? (row[mapping.remarks] || '').trim() : '',
-          documentIds: [],
-          noDocRequired: amount > 0,
-          verified: false,
-        }
-      })
+    })
+    return result
+  }
+
+  function applyImportBookingFilter(
+    bookings: Booking[],
+    filters?: ImportBookingFilter,
+  ): Booking[] {
+    if (!filters) return bookings
+    let created = bookings
+    if (filters.direction === 'incoming') {
+      created = created.filter(b => b.amount > 0)
+    } else if (filters.direction === 'outgoing') {
+      created = created.filter(b => b.amount < 0)
+    }
+    if (filters.dateFrom) {
+      const from = new Date(filters.dateFrom)
+      from.setHours(0, 0, 0, 0)
+      created = created.filter(b => b.date && b.date >= from)
+    }
+    if (filters.dateTo) {
+      const to = new Date(filters.dateTo)
+      to.setHours(23, 59, 59, 999)
+      created = created.filter(b => b.date && b.date <= to)
+    }
+    return created
+  }
+
+  function bookingFingerprint(b: Booking): string {
+    const d = b.date
+    const dateKey = d && !Number.isNaN(d.getTime())
+      ? `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+      : ''
+    return `${dateKey}|${b.amount}|${b.description}|${b.remarks}`
+  }
+
+  /**
+   * Überträgt Zuordnungen und manuelle Flags von bestehenden Buchungen auf
+   * neu erzeugte. Treffer zuerst über die Tabellenzeile, sonst über Datum,
+   * Betrag und Text – damit ein Filterwechsel nicht alle Belege löst.
+   */
+  function mergeBookingAssignments(previous: Booking[], next: Booking[]): Booking[] {
+    const used = new Set<number>()
+
+    function take(pred: (b: Booking) => boolean): Booking | undefined {
+      for (let i = 0; i < previous.length; i++) {
+        if (used.has(i)) continue
+        if (!pred(previous[i])) continue
+        used.add(i)
+        return previous[i]
+      }
+      return undefined
+    }
+
+    return next.map((nb) => {
+      const old =
+        (nb.sourceRowIndex != null
+          ? take(o => o.sourceRowIndex === nb.sourceRowIndex)
+          : undefined)
+        ?? take(o => bookingFingerprint(o) === bookingFingerprint(nb))
+      if (!old) return nb
+      return {
+        ...nb,
+        id: old.id,
+        documentIds: [...old.documentIds],
+        noDocRequired: old.noDocRequired,
+        verified: old.verified,
+      }
+    })
+  }
+
+  /** Entfallene Buchungen sowie Belege, die dadurch ihre Zuordnung verlieren. */
+  function countLostAssignments(previous: Booking[], merged: Booking[]): { bookingCount: number; documentCount: number } {
+    const keptIds = new Set(merged.map(b => b.id))
+    const bookingCount = previous.filter(b => !keptIds.has(b.id)).length
+
+    const stillAssigned = new Set(merged.flatMap(b => b.documentIds))
+    const lostDocs = new Set<string>()
+    for (const booking of previous) {
+      for (const id of booking.documentIds) {
+        if (!stillAssigned.has(id)) lostDocs.add(id)
+      }
+    }
+    return { bookingCount, documentCount: lostDocs.size }
   }
 
   async function decodeFileText(file: File): Promise<string> {
@@ -163,5 +246,16 @@ export function useTableParser() {
     throw new Error(`Nicht unterstütztes Dateiformat: .${ext}`)
   }
 
-  return { parseFile, detectColumns, createBookings, parseDate, parseAmount, columnContainsNumbers, columnContainsDates }
+  return {
+    parseFile,
+    detectColumns,
+    createBookings,
+    applyImportBookingFilter,
+    mergeBookingAssignments,
+    countLostAssignments,
+    parseDate,
+    parseAmount,
+    columnContainsNumbers,
+    columnContainsDates,
+  }
 }

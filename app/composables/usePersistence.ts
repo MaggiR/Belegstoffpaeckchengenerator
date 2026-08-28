@@ -143,6 +143,7 @@ interface SerializedBooking {
   documentId?: string | null
   noDocRequired: boolean
   verified?: boolean
+  sourceRowIndex?: number
 }
 
 /** Zählt zugeordnete Belege in gespeicherten Buchungen beider Formate. */

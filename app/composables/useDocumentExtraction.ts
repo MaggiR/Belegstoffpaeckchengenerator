@@ -2,12 +2,16 @@ import type { DocumentExtraction, DocumentFile, LlmProvider, LlmSettings } from 
 import { parseDocumentKind } from '~/types'
 
 /**
- * Vision-Modelle brauchen auf CPU-Hardware leicht mehrere Minuten pro Beleg,
- * und der erste Beleg zahlt zusätzlich die Ladezeit des Modells. Der Wert liegt
- * knapp unter dem `proxy_read_timeout` der nginx.conf (300 s): so bricht der
- * Browser zuerst ab und zeigt seine Meldung statt eines Proxy-504.
+ * Frist bis zum ersten Byte. Hier steckt bei Ollama die Modell-Ladezeit, die
+ * beim ersten Beleg nach einem Serverstart mehrere Minuten dauern kann.
  */
 const REQUEST_TIMEOUT_MS = 270_000
+/**
+ * Frist zwischen zwei Fragmenten eines laufenden Streams. Sobald Tokens
+ * fließen, ist die Gesamtdauer unbegrenzt – nur ein stehengebliebener Stream
+ * läuft in dieses Limit.
+ */
+const STREAM_IDLE_TIMEOUT_MS = 120_000
 const MAX_PAGE_IMAGES = 8
 /** Zielhöhe für gerenderte PDF-Seiten (Breite proportional). Entspricht Bild-Belegen. */
 const PAGE_RENDER_HEIGHT = 1980
@@ -88,7 +92,7 @@ let batchPrecount = 0
  */
 const MAX_CONCURRENT_EXTRACTIONS: Record<LlmProvider, number> = {
   ollama: 6,
-  openai: 4,
+  openai: 20,
 }
 
 export function fallbackTitleFromName(name: string): string {
@@ -263,6 +267,61 @@ function buildUserText(fileName: string, organizationName: string): string {
   return `${buildPrompt(org)}\n\n${orgBlock}Dateiname: ${fileName}\n\nBeurteile den Beleg anhand der mitgelieferten Seitenbilder.`
 }
 
+/**
+ * Bei `stream: true` antwortet Ollama mit NDJSON: pro Zeile ein JSON-Objekt mit
+ * einem Textfragment. `onActivity` läuft bei jedem empfangenen Block, damit der
+ * Aufrufer seine Wartefrist neu setzen kann.
+ *
+ * Puffert eine Zwischenstation trotz allem die ganze Antwort, kommt sie hier als
+ * ein einziger Block an – das Ergebnis bleibt dasselbe.
+ */
+async function readOllamaStream(
+  res: Response,
+  onActivity: () => void,
+): Promise<{ content: string; error?: string }> {
+  let content = ''
+  let error: string | undefined
+
+  const consumeLine = (line: string): void => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    let parsed: any
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      return
+    }
+    if (typeof parsed?.error === 'string' && parsed.error.trim()) error = parsed.error.trim()
+    const fragment = parsed?.message?.content
+    if (typeof fragment === 'string') content += fragment
+  }
+
+  if (!res.body) {
+    const text = await res.text()
+    for (const line of text.split('\n')) consumeLine(line)
+    return { content, error }
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    onActivity()
+    buffer += decoder.decode(value, { stream: true })
+    for (;;) {
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) break
+      consumeLine(buffer.slice(0, newline))
+      buffer = buffer.slice(newline + 1)
+    }
+  }
+  consumeLine(buffer + decoder.decode())
+  return { content, error }
+}
+
 async function callOllama(
   settings: LlmSettings,
   text: string,
@@ -271,95 +330,116 @@ async function callOllama(
 ): Promise<string> {
   const configured = settings.ollamaBaseUrl
   const model = settings.ollamaModel.trim()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   const startedAt = Date.now()
 
-  let res: Response
-  let errorMessage: string | null = null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const armWatchdog = (ms: number): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => controller.abort(), ms)
+  }
+
   try {
-    const body: Record<string, unknown> = {
-      model,
-      stream: false,
-      format: OLLAMA_SCHEMA,
-      options: { temperature: 0 },
-      messages: [{
-        role: 'user',
-        content: text,
-        // Ollama erwartet reines Base64 ohne data:-Präfix
-        images: dataUrls.map(url => url.replace(/^data:[^;]+;base64,/, '')),
-      }],
-    }
-    const effort = settings.ollamaReasoningEffort
-    if (effort) body.think = effort
+    armWatchdog(REQUEST_TIMEOUT_MS)
 
-    const send = (payload: Record<string, unknown>) => fetchOllama(configured, '/api/chat', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }, settings.ollamaBearerToken ?? '')
-
-    res = await send(body)
-    if (!res.ok && effort && (res.status === 400 || res.status === 422 || res.status === 500)) {
-      // Body nur hier lesen, damit der zweite Versuch die Seitenbilder nicht
-      // umsonst erneut hochlädt, wenn "think" gar nicht das Problem war.
-      errorMessage = await readErrorMessage(res)
-      if (/think/i.test(errorMessage)) {
-        const { think: _ignored, ...withoutThink } = body
-        res = await send(withoutThink)
-        errorMessage = null
+    let res: Response
+    let errorMessage: string | null = null
+    try {
+      const body: Record<string, unknown> = {
+        model,
+        // Streaming hält die Verbindung mit Tokens am Leben. Ohne das muss jedes
+        // Lese-Timeout der Proxy-Kette die volle Rechenzeit abdecken.
+        stream: true,
+        format: OLLAMA_SCHEMA,
+        options: { temperature: 0 },
+        messages: [{
+          role: 'user',
+          content: text,
+          // Ollama erwartet reines Base64 ohne data:-Präfix
+          images: dataUrls.map(url => url.replace(/^data:[^;]+;base64,/, '')),
+        }],
       }
+      const effort = settings.ollamaReasoningEffort
+      if (effort) body.think = effort
+
+      const send = (payload: Record<string, unknown>) => fetchOllama(configured, '/api/chat', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }, settings.ollamaBearerToken ?? '')
+
+      res = await send(body)
+      if (!res.ok && effort && (res.status === 400 || res.status === 422 || res.status === 500)) {
+        // Body nur hier lesen, damit der zweite Versuch die Seitenbilder nicht
+        // umsonst erneut hochlädt, wenn "think" gar nicht das Problem war.
+        errorMessage = await readErrorMessage(res)
+        if (/think/i.test(errorMessage)) {
+          const { think: _ignored, ...withoutThink } = body
+          res = await send(withoutThink)
+          errorMessage = null
+        }
+      }
+    } catch (e) {
+      throw new Error(describeNetworkFailure(e, 'Ollama', configured))
     }
-  } catch (e) {
-    throw new Error(describeNetworkFailure(e, 'Ollama', configured))
+
+    if (!res.ok) {
+      const raw = errorMessage ?? await readErrorMessage(res)
+      const detail = detailSuffix(raw)
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`Ollama hat den Bearer-Token abgelehnt (HTTP ${res.status}).${detail}`)
+      }
+      if (res.status === 404) {
+        throw new Error(`Ollama kennt das Modell "${model}" nicht (HTTP 404). Mit "ollama pull ${model}" laden oder den Namen in den Einstellungen anpassen.${detail}`)
+      }
+      if (res.status === 504 || res.status === 408 || res.status === 524) {
+        const seconds = Math.round((Date.now() - startedAt) / 1000)
+        // Nur unser eigener Proxy markiert seine Antworten. Fehlt der Marker, kann
+        // der Abbruch von jeder anderen Station der Kette kommen – auch von einem
+        // Reverse Proxy vor dieser App, nicht nur von einem Auth-Proxy vor Ollama.
+        const culprit = res.headers.get('X-App-Proxy') === '1'
+          ? 'Abgebrochen hat der App-Proxy dieser Anwendung ("proxy_read_timeout" in der nginx.conf).'
+          : 'Abgebrochen hat eine Station in der Kette, die nicht zu dieser App gehört: ein Reverse Proxy davor '
+            + 'oder ein Auth-Proxy vor Ollama. Ein Abbruch nach einer runden Zeit wie 60, 90 oder 100 s deutet auf '
+            + 'einen Reverse Proxy vor der App hin; in dessen Log steht dann Status 499.'
+        const hint = seconds <= 20
+          ? 'So früh greift kein Lese-Timeout: hier scheitert bereits der Verbindungsaufbau ("proxy_connect_timeout"). '
+            + 'Prüfe, ob der Proxy-Container die Ollama-Adresse auflösen und erreichen kann.'
+          : 'Die Anfrage läuft gestreamt, ein Timeout sollte hier also nicht mehr auftreten. '
+            + 'Puffert eine Zwischenstation die Antwort (bei nginx "proxy_buffering"), kommt sie trotzdem erst am Ende an.'
+        throw new Error(
+          `Zeitüberschreitung nach ${seconds} s (HTTP ${res.status}), bevor "${model}" fertig war. ${culprit} ${hint}`,
+        )
+      }
+      const memoryFailure = describeModelMemoryFailure(raw, model, dataUrls.length)
+      if (memoryFailure) throw new Error(memoryFailure)
+      throw new Error(`Ollama antwortete mit HTTP ${res.status}${detail}`)
+    }
+
+    let streamed: { content: string; error?: string }
+    try {
+      streamed = await readOllamaStream(res, () => armWatchdog(STREAM_IDLE_TIMEOUT_MS))
+    } catch (e: any) {
+      if (e?.name === 'AbortError') {
+        throw new Error(
+          `Die Antwort von Ollama brach nach ${Math.round((Date.now() - startedAt) / 1000)} s mitten im Stream ab: `
+          + `länger als ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)} s kam kein weiteres Fragment.`,
+        )
+      }
+      throw new Error(describeNetworkFailure(e, 'Ollama', configured))
+    }
+
+    if (streamed.error) {
+      const memoryFailure = describeModelMemoryFailure(streamed.error, model, dataUrls.length)
+      throw new Error(memoryFailure ?? `Ollama meldet: ${streamed.error.slice(0, 300)}`)
+    }
+    if (!streamed.content.trim()) {
+      throw new Error('Ollama lieferte eine leere Antwort. Unterstützt das gewählte Modell Bildeingaben?')
+    }
+    return streamed.content
   } finally {
-    clearTimeout(timer)
+    if (timer) clearTimeout(timer)
   }
-
-  if (!res.ok) {
-    const raw = errorMessage ?? await readErrorMessage(res)
-    const detail = detailSuffix(raw)
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(`Ollama hat den Bearer-Token abgelehnt (HTTP ${res.status}).${detail}`)
-    }
-    if (res.status === 404) {
-      throw new Error(`Ollama kennt das Modell "${model}" nicht (HTTP 404). Mit "ollama pull ${model}" laden oder den Namen in den Einstellungen anpassen.${detail}`)
-    }
-    if (res.status === 504 || res.status === 408 || res.status === 524) {
-      // Unser eigener Proxy markiert seine Antworten, sonst kommt der Abbruch
-      // von einem Auth-Proxy vor Ollama – die Stellschraube liegt jeweils anders.
-      const fromAppProxy = res.headers.get('X-App-Proxy') === '1'
-      const seconds = Math.round((Date.now() - startedAt) / 1000)
-      const culprit = fromAppProxy
-        ? 'Abgebrochen hat der App-Proxy dieser Anwendung (nginx.conf)'
-        : 'Abgebrochen hat ein Auth-Proxy vor Ollama (dessen eigene Konfiguration)'
-      // Eine Abbruchzeit im Sekundenbereich stammt aus proxy_connect_timeout,
-      // nicht aus proxy_read_timeout – dann ist das Ziel gar nicht erreichbar.
-      const hint = seconds <= 30
-        ? 'So früh greift kein Lese-Timeout: hier scheitert bereits der Verbindungsaufbau zum Ziel ("proxy_connect_timeout"). '
-          + 'Prüfe, ob der Proxy-Container die Ollama-Adresse überhaupt auflösen und erreichen kann – ein Direktzugriff aus dem Browser sagt darüber nichts aus.'
-        : 'Das Modell rechnet länger als der Proxy wartet ("proxy_read_timeout"). Da die Antwort unstreamed übertragen wird, '
-          + 'muss dieser Wert die komplette Rechenzeit abdecken – inklusive Modell-Ladezeit beim ersten Beleg.'
-      throw new Error(
-        `Zeitüberschreitung nach ${seconds} s (HTTP ${res.status}), bevor "${model}" fertig war. ${culprit}. ${hint}`,
-      )
-    }
-    const memoryFailure = describeModelMemoryFailure(raw, model, dataUrls.length)
-    if (memoryFailure) throw new Error(memoryFailure)
-    throw new Error(`Ollama antwortete mit HTTP ${res.status}${detail}`)
-  }
-
-  const data = await res.json()
-  if (typeof data?.error === 'string' && data.error.trim()) {
-    const raw = data.error.trim()
-    const memoryFailure = describeModelMemoryFailure(raw, model, dataUrls.length)
-    throw new Error(memoryFailure ?? `Ollama meldet: ${raw.slice(0, 300)}`)
-  }
-  const content = data?.message?.content
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('Ollama lieferte eine leere Antwort. Unterstützt das gewählte Modell Bildeingaben?')
-  }
-  return content
 }
 
 async function callOpenAi(

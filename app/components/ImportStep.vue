@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ImportBookingFilter } from '~/types'
 const {
   bookings,
   tableHeaders,
@@ -12,7 +13,7 @@ const {
   processingMessage,
 } = useAppState()
 
-const { parseFile, detectColumns, createBookings } = useTableParser()
+const { parseFile, detectColumns, createBookings, applyImportBookingFilter } = useTableParser()
 
 const tableDropActive = ref(false)
 const tableInputRef = ref<HTMLInputElement>()
@@ -75,27 +76,12 @@ function onTableFileSelect(e: Event) {
   if (file) handleTableUpload(file)
 }
 
-function applyMapping(importFilters?: { dateFrom: string | null; dateTo: string | null; direction: 'all' | 'incoming' | 'outgoing' }) {
+function applyMapping(importFilters?: ImportBookingFilter) {
   parseError.value = ''
-  let created = createBookings(allTableRows.value, columnMapping.value)
-
-  if (importFilters) {
-    if (importFilters.direction === 'incoming') {
-      created = created.filter(b => b.amount > 0)
-    } else if (importFilters.direction === 'outgoing') {
-      created = created.filter(b => b.amount < 0)
-    }
-    if (importFilters.dateFrom) {
-      const from = new Date(importFilters.dateFrom)
-      from.setHours(0, 0, 0, 0)
-      created = created.filter(b => b.date && b.date >= from)
-    }
-    if (importFilters.dateTo) {
-      const to = new Date(importFilters.dateTo)
-      to.setHours(23, 59, 59, 999)
-      created = created.filter(b => b.date && b.date <= to)
-    }
-  }
+  const created = applyImportBookingFilter(
+    createBookings(allTableRows.value, columnMapping.value),
+    importFilters,
+  )
 
   if (created.length === 0) {
     parseError.value = 'Keine gültigen Buchungen gefunden. Bitte überprüfen Sie die Spaltenzuordnung oder die Filtereinstellungen.'
